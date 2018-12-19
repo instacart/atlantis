@@ -10,7 +10,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // Modified hereafter by contributors to runatlantis/atlantis.
-//
+
 package events
 
 import (
@@ -30,26 +30,35 @@ import (
 
 //go:generate pegomock generate -m --use-experimental-model-gen --package mocks -o mocks/mock_lock_url_generator.go LockURLGenerator
 
+// LockURLGenerator generates urls to locks.
 type LockURLGenerator interface {
+	// GenerateLockURL returns the full URL to the lock at lockID.
 	GenerateLockURL(lockID string) string
 }
 
 //go:generate pegomock generate -m --use-experimental-model-gen --package mocks -o mocks/mock_step_runner.go StepRunner
 
+// StepRunner runs steps. Steps are individual pieces of execution like
+// `terraform plan`.
 type StepRunner interface {
+	// Run runs the step.
 	Run(ctx models.ProjectCommandContext, extraArgs []string, path string) (string, error)
 }
 
 //go:generate pegomock generate -m --use-experimental-model-gen --package mocks -o mocks/mock_webhooks_sender.go WebhooksSender
 
+// WebhooksSender sends webhook.
 type WebhooksSender interface {
+	// Send sends the webhook.
 	Send(log *logging.SimpleLogger, res webhooks.ApplyResult) error
 }
 
 // PlanSuccess is the result of a successful plan.
 type PlanSuccess struct {
+	// TerraformOutput is the output from Terraform of running plan.
 	TerraformOutput string
-	LockURL         string
+	// LockURL is the full URL to the lock held by this plan.
+	LockURL string
 	// RePlanCmd is the command that users should run to re-plan this project.
 	RePlanCmd string
 	// ApplyCmd is the command that users should run to apply this plan.
@@ -58,60 +67,73 @@ type PlanSuccess struct {
 
 //go:generate pegomock generate -m --use-experimental-model-gen --package mocks -o mocks/mock_project_command_runner.go ProjectCommandRunner
 
+// ProjectCommandRunner runs project commands. A project command is a command
+// for a specific TF project.
 type ProjectCommandRunner interface {
+	// Plan runs terraform plan for the project described by ctx.
 	Plan(ctx models.ProjectCommandContext) ProjectResult
+	// Apply runs terraform apply for the project described by ctx.
 	Apply(ctx models.ProjectCommandContext) ProjectResult
 }
 
+// DefaultProjectCommandRunner implements ProjectCommandRunner.
 type DefaultProjectCommandRunner struct {
-	Locker                  ProjectLocker
-	LockURLGenerator        LockURLGenerator
-	InitStepRunner          StepRunner
-	PlanStepRunner          StepRunner
-	ApplyStepRunner         StepRunner
-	RunStepRunner           StepRunner
-	PullApprovedChecker     runtime.PullApprovedChecker
-	WorkingDir              WorkingDir
-	Webhooks                WebhooksSender
-	WorkingDirLocker        WorkingDirLocker
-	RequireApprovalOverride bool
+	Locker                   ProjectLocker
+	LockURLGenerator         LockURLGenerator
+	InitStepRunner           StepRunner
+	PlanStepRunner           StepRunner
+	ApplyStepRunner          StepRunner
+	RunStepRunner            StepRunner
+	PullApprovedChecker      runtime.PullApprovedChecker
+	PullMergeableChecker     runtime.PullMergeableChecker
+	WorkingDir               WorkingDir
+	Webhooks                 WebhooksSender
+	WorkingDirLocker         WorkingDirLocker
+	RequireApprovalOverride  bool
+	RequireMergeableOverride bool
 }
 
+// Plan runs terraform plan for the project described by ctx.
 func (p *DefaultProjectCommandRunner) Plan(ctx models.ProjectCommandContext) ProjectResult {
-	result := p.doPlan(ctx)
+	planSuccess, failure, err := p.doPlan(ctx)
 	return ProjectResult{
-		ProjectCommandResult: result,
-		RepoRelDir:           ctx.RepoRelDir,
-		Workspace:            ctx.Workspace,
+		PlanSuccess: planSuccess,
+		Error:       err,
+		Failure:     failure,
+		RepoRelDir:  ctx.RepoRelDir,
+		Workspace:   ctx.Workspace,
+		ProjectName: ctx.GetProjectName(),
 	}
 }
 
+// Apply runs terraform apply for the project described by ctx.
 func (p *DefaultProjectCommandRunner) Apply(ctx models.ProjectCommandContext) ProjectResult {
-	result := p.doApply(ctx)
+	applyOut, failure, err := p.doApply(ctx)
 	return ProjectResult{
-		ProjectCommandResult: result,
-		RepoRelDir:           ctx.RepoRelDir,
-		Workspace:            ctx.Workspace,
+		Failure:      failure,
+		Error:        err,
+		ApplySuccess: applyOut,
+		RepoRelDir:   ctx.RepoRelDir,
+		Workspace:    ctx.Workspace,
+		ProjectName:  ctx.GetProjectName(),
 	}
 }
 
-func (p *DefaultProjectCommandRunner) doPlan(ctx models.ProjectCommandContext) ProjectCommandResult {
+func (p *DefaultProjectCommandRunner) doPlan(ctx models.ProjectCommandContext) (*PlanSuccess, string, error) {
 	// Acquire Atlantis lock for this repo/dir/workspace.
 	lockAttempt, err := p.Locker.TryLock(ctx.Log, ctx.Pull, ctx.User, ctx.Workspace, models.NewProject(ctx.BaseRepo.FullName, ctx.RepoRelDir))
 	if err != nil {
-		return ProjectCommandResult{
-			Error: errors.Wrap(err, "acquiring lock"),
-		}
+		return nil, "", errors.Wrap(err, "acquiring lock")
 	}
 	if !lockAttempt.LockAcquired {
-		return ProjectCommandResult{Failure: lockAttempt.LockFailureReason}
+		return nil, lockAttempt.LockFailureReason, nil
 	}
 	ctx.Log.Debug("acquired lock for project")
 
 	// Acquire internal lock for the directory we're going to operate in.
 	unlockFn, err := p.WorkingDirLocker.TryLock(ctx.BaseRepo.FullName, ctx.Pull.Num, ctx.Workspace)
 	if err != nil {
-		return ProjectCommandResult{Error: err}
+		return nil, "", err
 	}
 	defer unlockFn()
 
@@ -121,7 +143,7 @@ func (p *DefaultProjectCommandRunner) doPlan(ctx models.ProjectCommandContext) P
 		if unlockErr := lockAttempt.UnlockFn(); unlockErr != nil {
 			ctx.Log.Err("error unlocking state after plan error: %v", unlockErr)
 		}
-		return ProjectCommandResult{Error: cloneErr}
+		return nil, "", cloneErr
 	}
 	projAbsPath := filepath.Join(repoDir, ctx.RepoRelDir)
 
@@ -140,17 +162,15 @@ func (p *DefaultProjectCommandRunner) doPlan(ctx models.ProjectCommandContext) P
 		if unlockErr := lockAttempt.UnlockFn(); unlockErr != nil {
 			ctx.Log.Err("error unlocking state after plan error: %v", unlockErr)
 		}
-		return ProjectCommandResult{Error: fmt.Errorf("%s\n%s", err, strings.Join(outputs, "\n"))}
+		return nil, "", fmt.Errorf("%s\n%s", err, strings.Join(outputs, "\n"))
 	}
 
-	return ProjectCommandResult{
-		PlanSuccess: &PlanSuccess{
-			LockURL:         p.LockURLGenerator.GenerateLockURL(lockAttempt.LockKey),
-			TerraformOutput: strings.Join(outputs, "\n"),
-			RePlanCmd:       ctx.RePlanCmd,
-			ApplyCmd:        ctx.ApplyCmd,
-		},
-	}
+	return &PlanSuccess{
+		LockURL:         p.LockURLGenerator.GenerateLockURL(lockAttempt.LockKey),
+		TerraformOutput: strings.Join(outputs, "\n"),
+		RePlanCmd:       ctx.RePlanCmd,
+		ApplyCmd:        ctx.ApplyCmd,
+	}, "", nil
 }
 
 func (p *DefaultProjectCommandRunner) runSteps(steps []valid.Step, ctx models.ProjectCommandContext, absPath string) ([]string, error) {
@@ -179,39 +199,54 @@ func (p *DefaultProjectCommandRunner) runSteps(steps []valid.Step, ctx models.Pr
 	return outputs, nil
 }
 
-func (p *DefaultProjectCommandRunner) doApply(ctx models.ProjectCommandContext) ProjectCommandResult {
+func (p *DefaultProjectCommandRunner) doApply(ctx models.ProjectCommandContext) (applyOut string, failure string, err error) {
 	repoDir, err := p.WorkingDir.GetWorkingDir(ctx.BaseRepo, ctx.Pull, ctx.Workspace)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return ProjectCommandResult{Error: errors.New("project has not been cloned–did you run plan?")}
+			return "", "", errors.New("project has not been cloned–did you run plan?")
 		}
-		return ProjectCommandResult{Error: err}
+		return "", "", err
 	}
 	absPath := filepath.Join(repoDir, ctx.RepoRelDir)
 
+	// Figure out what our apply requirements are.
 	var applyRequirements []string
-	if ctx.ProjectConfig != nil {
+	if p.RequireApprovalOverride || p.RequireMergeableOverride {
+		// If any server flags are set, they override project config.
+		if p.RequireMergeableOverride {
+			applyRequirements = append(applyRequirements, raw.MergeableApplyRequirement)
+		}
+		if p.RequireApprovalOverride {
+			applyRequirements = append(applyRequirements, raw.ApprovedApplyRequirement)
+		}
+	} else if ctx.ProjectConfig != nil {
+		// Else we use the project config if it's set.
 		applyRequirements = ctx.ProjectConfig.ApplyRequirements
-	}
-	if p.RequireApprovalOverride {
-		applyRequirements = []string{raw.ApprovedApplyRequirement}
 	}
 	for _, req := range applyRequirements {
 		switch req {
 		case raw.ApprovedApplyRequirement:
 			approved, err := p.PullApprovedChecker.PullIsApproved(ctx.BaseRepo, ctx.Pull) // nolint: vetshadow
 			if err != nil {
-				return ProjectCommandResult{Error: errors.Wrap(err, "checking if pull request was approved")}
+				return "", "", errors.Wrap(err, "checking if pull request was approved")
 			}
 			if !approved {
-				return ProjectCommandResult{Failure: "Pull request must be approved before running apply."}
+				return "", "Pull request must be approved before running apply.", nil
+			}
+		case raw.MergeableApplyRequirement:
+			mergeable, err := p.PullMergeableChecker.PullIsMergeable(ctx.BaseRepo, ctx.Pull) // nolint: vetshadow
+			if err != nil {
+				return "", "", errors.Wrap(err, "checking if pull request is mergeable")
+			}
+			if !mergeable {
+				return "", "Pull request must be mergeable before running apply.", nil
 			}
 		}
 	}
 	// Acquire internal lock for the directory we're going to operate in.
 	unlockFn, err := p.WorkingDirLocker.TryLock(ctx.BaseRepo.FullName, ctx.Pull.Num, ctx.Workspace)
 	if err != nil {
-		return ProjectCommandResult{Error: err}
+		return "", "", err
 	}
 	defer unlockFn()
 
@@ -232,11 +267,9 @@ func (p *DefaultProjectCommandRunner) doApply(ctx models.ProjectCommandContext) 
 		Success:   err == nil,
 	})
 	if err != nil {
-		return ProjectCommandResult{Error: fmt.Errorf("%s\n%s", err, strings.Join(outputs, "\n"))}
+		return "", "", fmt.Errorf("%s\n%s", err, strings.Join(outputs, "\n"))
 	}
-	return ProjectCommandResult{
-		ApplySuccess: strings.Join(outputs, "\n"),
-	}
+	return strings.Join(outputs, "\n"), "", nil
 }
 
 func (p DefaultProjectCommandRunner) defaultPlanStage() valid.Stage {

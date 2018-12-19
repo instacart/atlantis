@@ -1,6 +1,7 @@
 package runtime_test
 
 import (
+	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -40,15 +41,61 @@ func TestRun_NoWorkspaceIn08(t *testing.T) {
 		Workspace:   workspace,
 		RepoRelDir:  ".",
 		User:        models.User{Username: "username"},
+		Pull: models.PullRequest{
+			Num: 2,
+		},
+		BaseRepo: models.Repo{
+			FullName: "owner/repo",
+			Owner:    "owner",
+			Name:     "repo",
+		},
 	}, []string{"extra", "args"}, "/path")
 	Ok(t, err)
 
 	Equals(t, "output", output)
-	terraform.VerifyWasCalledOnce().RunCommandWithVersion(logger, "/path", []string{"plan", "-refresh", "-no-color", "-out", "/path/default.tfplan", "-var", "atlantis_user=username", "extra", "args", "comment", "args"}, tfVersion, workspace)
+	terraform.VerifyWasCalledOnce().RunCommandWithVersion(
+		logger,
+		"/path",
+		[]string{"plan",
+			"-input=false",
+			"-refresh",
+			"-no-color",
+			"-out",
+			"\"/path/default.tfplan\"",
+			"-var",
+			"atlantis_user=\"username\"",
+			"-var",
+			"atlantis_repo=\"owner/repo\"",
+			"-var",
+			"atlantis_repo_name=\"repo\"",
+			"-var",
+			"atlantis_repo_owner=\"owner\"",
+			"-var",
+			"atlantis_pull_num=2",
+			"extra",
+			"args",
+			"comment",
+			"args"},
+		tfVersion,
+		workspace)
 
 	// Verify that no env or workspace commands were run
-	terraform.VerifyWasCalled(Never()).RunCommandWithVersion(logger, "/path", []string{"env", "select", "-no-color", "workspace"}, tfVersion, workspace)
-	terraform.VerifyWasCalled(Never()).RunCommandWithVersion(logger, "/path", []string{"workspace", "select", "-no-color", "workspace"}, tfVersion, workspace)
+	terraform.VerifyWasCalled(Never()).RunCommandWithVersion(logger,
+		"/path",
+		[]string{"env",
+			"select",
+			"-no-color",
+			"workspace"},
+		tfVersion,
+		workspace)
+	terraform.VerifyWasCalled(Never()).RunCommandWithVersion(logger,
+		"/path",
+		[]string{"workspace",
+			"select",
+			"-no-color",
+			"workspace"},
+		tfVersion,
+		workspace)
 }
 
 func TestRun_ErrWorkspaceIn08(t *testing.T) {
@@ -121,13 +168,51 @@ func TestRun_SwitchesWorkspace(t *testing.T) {
 				RepoRelDir:  ".",
 				User:        models.User{Username: "username"},
 				CommentArgs: []string{"comment", "args"},
+				Pull: models.PullRequest{
+					Num: 2,
+				},
+				BaseRepo: models.Repo{
+					FullName: "owner/repo",
+					Owner:    "owner",
+					Name:     "repo",
+				},
 			}, []string{"extra", "args"}, "/path")
 			Ok(t, err)
 
 			Equals(t, "output", output)
 			// Verify that env select was called as well as plan.
-			terraform.VerifyWasCalledOnce().RunCommandWithVersion(logger, "/path", []string{c.expWorkspaceCmd, "select", "-no-color", "workspace"}, tfVersion, "workspace")
-			terraform.VerifyWasCalledOnce().RunCommandWithVersion(logger, "/path", []string{"plan", "-refresh", "-no-color", "-out", "/path/workspace.tfplan", "-var", "atlantis_user=username", "extra", "args", "comment", "args"}, tfVersion, "workspace")
+			terraform.VerifyWasCalledOnce().RunCommandWithVersion(logger,
+				"/path",
+				[]string{c.expWorkspaceCmd,
+					"select",
+					"-no-color",
+					"workspace"},
+				tfVersion,
+				"workspace")
+			terraform.VerifyWasCalledOnce().RunCommandWithVersion(logger,
+				"/path",
+				[]string{"plan",
+					"-input=false",
+					"-refresh",
+					"-no-color",
+					"-out",
+					"\"/path/workspace.tfplan\"",
+					"-var",
+					"atlantis_user=\"username\"",
+					"-var",
+					"atlantis_repo=\"owner/repo\"",
+					"-var",
+					"atlantis_repo_name=\"repo\"",
+					"-var",
+					"atlantis_repo_owner=\"owner\"",
+					"-var",
+					"atlantis_pull_num=2",
+					"extra",
+					"args",
+					"comment",
+					"args"},
+				tfVersion,
+				"workspace")
 		})
 	}
 }
@@ -175,7 +260,26 @@ func TestRun_CreatesWorkspace(t *testing.T) {
 			expWorkspaceArgs := []string{c.expWorkspaceCommand, "select", "-no-color", "workspace"}
 			When(terraform.RunCommandWithVersion(logger, "/path", expWorkspaceArgs, tfVersion, "workspace")).ThenReturn("", errors.New("workspace does not exist"))
 
-			expPlanArgs := []string{"plan", "-refresh", "-no-color", "-out", "/path/workspace.tfplan", "-var", "atlantis_user=username", "extra", "args", "comment", "args"}
+			expPlanArgs := []string{"plan",
+				"-input=false",
+				"-refresh",
+				"-no-color",
+				"-out",
+				"\"/path/workspace.tfplan\"",
+				"-var",
+				"atlantis_user=\"username\"",
+				"-var",
+				"atlantis_repo=\"owner/repo\"",
+				"-var",
+				"atlantis_repo_name=\"repo\"",
+				"-var",
+				"atlantis_repo_owner=\"owner\"",
+				"-var",
+				"atlantis_pull_num=2",
+				"extra",
+				"args",
+				"comment",
+				"args"}
 			When(terraform.RunCommandWithVersion(logger, "/path", expPlanArgs, tfVersion, "workspace")).ThenReturn("output", nil)
 
 			output, err := s.Run(models.ProjectCommandContext{
@@ -184,6 +288,14 @@ func TestRun_CreatesWorkspace(t *testing.T) {
 				RepoRelDir:  ".",
 				User:        models.User{Username: "username"},
 				CommentArgs: []string{"comment", "args"},
+				Pull: models.PullRequest{
+					Num: 2,
+				},
+				BaseRepo: models.Repo{
+					FullName: "owner/repo",
+					Owner:    "owner",
+					Name:     "repo",
+				},
 			}, []string{"extra", "args"}, "/path")
 			Ok(t, err)
 
@@ -208,7 +320,26 @@ func TestRun_NoWorkspaceSwitchIfNotNecessary(t *testing.T) {
 	}
 	When(terraform.RunCommandWithVersion(logger, "/path", []string{"workspace", "show"}, tfVersion, "workspace")).ThenReturn("workspace\n", nil)
 
-	expPlanArgs := []string{"plan", "-refresh", "-no-color", "-out", "/path/workspace.tfplan", "-var", "atlantis_user=username", "extra", "args", "comment", "args"}
+	expPlanArgs := []string{"plan",
+		"-input=false",
+		"-refresh",
+		"-no-color",
+		"-out",
+		"\"/path/workspace.tfplan\"",
+		"-var",
+		"atlantis_user=\"username\"",
+		"-var",
+		"atlantis_repo=\"owner/repo\"",
+		"-var",
+		"atlantis_repo_name=\"repo\"",
+		"-var",
+		"atlantis_repo_owner=\"owner\"",
+		"-var",
+		"atlantis_pull_num=2",
+		"extra",
+		"args",
+		"comment",
+		"args"}
 	When(terraform.RunCommandWithVersion(logger, "/path", expPlanArgs, tfVersion, "workspace")).ThenReturn("output", nil)
 
 	output, err := s.Run(models.ProjectCommandContext{
@@ -217,6 +348,14 @@ func TestRun_NoWorkspaceSwitchIfNotNecessary(t *testing.T) {
 		RepoRelDir:  ".",
 		User:        models.User{Username: "username"},
 		CommentArgs: []string{"comment", "args"},
+		Pull: models.PullRequest{
+			Num: 2,
+		},
+		BaseRepo: models.Repo{
+			FullName: "owner/repo",
+			Owner:    "owner",
+			Name:     "repo",
+		},
 	}, []string{"extra", "args"}, "/path")
 	Ok(t, err)
 
@@ -249,7 +388,29 @@ func TestRun_AddsEnvVarFile(t *testing.T) {
 		DefaultTFVersion:  tfVersion,
 	}
 
-	expPlanArgs := []string{"plan", "-refresh", "-no-color", "-out", filepath.Join(tmpDir, "workspace.tfplan"), "-var", "atlantis_user=username", "extra", "args", "comment", "args", "-var-file", envVarsFile}
+	expPlanArgs := []string{"plan",
+		"-input=false",
+		"-refresh",
+		"-no-color",
+		"-out",
+		fmt.Sprintf("%q", filepath.Join(tmpDir, "workspace.tfplan")),
+		"-var",
+		"atlantis_user=\"username\"",
+		"-var",
+		"atlantis_repo=\"owner/repo\"",
+		"-var",
+		"atlantis_repo_name=\"repo\"",
+		"-var",
+		"atlantis_repo_owner=\"owner\"",
+		"-var",
+		"atlantis_pull_num=2",
+		"extra",
+		"args",
+		"comment",
+		"args",
+		"-var-file",
+		envVarsFile,
+	}
 	When(terraform.RunCommandWithVersion(logger, tmpDir, expPlanArgs, tfVersion, "workspace")).ThenReturn("output", nil)
 
 	output, err := s.Run(models.ProjectCommandContext{
@@ -258,6 +419,14 @@ func TestRun_AddsEnvVarFile(t *testing.T) {
 		RepoRelDir:  ".",
 		User:        models.User{Username: "username"},
 		CommentArgs: []string{"comment", "args"},
+		Pull: models.PullRequest{
+			Num: 2,
+		},
+		BaseRepo: models.Repo{
+			FullName: "owner/repo",
+			Owner:    "owner",
+			Name:     "repo",
+		},
 	}, []string{"extra", "args"}, tmpDir)
 	Ok(t, err)
 
@@ -280,7 +449,27 @@ func TestRun_UsesDiffPathForProject(t *testing.T) {
 	}
 	When(terraform.RunCommandWithVersion(logger, "/path", []string{"workspace", "show"}, tfVersion, "workspace")).ThenReturn("workspace\n", nil)
 
-	expPlanArgs := []string{"plan", "-refresh", "-no-color", "-out", "/path/projectname-default.tfplan", "-var", "atlantis_user=username", "extra", "args", "comment", "args"}
+	expPlanArgs := []string{"plan",
+		"-input=false",
+		"-refresh",
+		"-no-color",
+		"-out",
+		"\"/path/projectname-default.tfplan\"",
+		"-var",
+		"atlantis_user=\"username\"",
+		"-var",
+		"atlantis_repo=\"owner/repo\"",
+		"-var",
+		"atlantis_repo_name=\"repo\"",
+		"-var",
+		"atlantis_repo_owner=\"owner\"",
+		"-var",
+		"atlantis_pull_num=2",
+		"extra",
+		"args",
+		"comment",
+		"args",
+	}
 	When(terraform.RunCommandWithVersion(logger, "/path", expPlanArgs, tfVersion, "default")).ThenReturn("output", nil)
 
 	projectName := "projectname"
@@ -293,7 +482,138 @@ func TestRun_UsesDiffPathForProject(t *testing.T) {
 		ProjectConfig: &valid.Project{
 			Name: &projectName,
 		},
+		Pull: models.PullRequest{
+			Num: 2,
+		},
+		BaseRepo: models.Repo{
+			FullName: "owner/repo",
+			Owner:    "owner",
+			Name:     "repo",
+		},
 	}, []string{"extra", "args"}, "/path")
 	Ok(t, err)
 	Equals(t, "output", output)
+}
+
+// Test that we format the plan output for better rendering.
+func TestRun_PlanFmt(t *testing.T) {
+	rawOutput := `Refreshing Terraform state in-memory prior to plan...
+The refreshed state will be used to calculate this plan, but will not be
+persisted to local or remote state storage.
+
+
+------------------------------------------------------------------------
+
+An execution plan has been generated and is shown below.
+Resource actions are indicated with the following symbols:
+  + create
+  ~ update in-place
+  - destroy
+
+Terraform will perform the following actions:
+
++ null_resource.test[0]
+      id: <computed>
+
+  + null_resource.test[1]
+      id: <computed>
+
+  ~ aws_security_group_rule.allow_all
+      description: "" => "test3"
+
+  - aws_security_group_rule.allow_all
+`
+	RegisterMockTestingT(t)
+	terraform := mocks.NewMockClient()
+	tfVersion, _ := version.NewVersion("0.10.0")
+	s := runtime.PlanStepRunner{
+		TerraformExecutor: terraform,
+		DefaultTFVersion:  tfVersion,
+	}
+	When(terraform.RunCommandWithVersion(
+		matchers.AnyPtrToLoggingSimpleLogger(),
+		AnyString(),
+		AnyStringSlice(),
+		matchers2.AnyPtrToGoVersionVersion(),
+		AnyString())).
+		Then(func(params []Param) ReturnValues {
+			// This code allows us to return different values depending on the
+			// tf command being run while still using the wildcard matchers above.
+			tfArgs := params[2].([]string)
+			if stringSliceEquals(tfArgs, []string{"workspace", "show"}) {
+				return []ReturnValue{"default", nil}
+			} else if tfArgs[0] == "plan" {
+				return []ReturnValue{rawOutput, nil}
+			} else {
+				return []ReturnValue{"", errors.New("unexpected call to RunCommandWithVersion")}
+			}
+		})
+	actOutput, err := s.Run(models.ProjectCommandContext{Workspace: "default"}, nil, "")
+	Ok(t, err)
+	Equals(t, `
+An execution plan has been generated and is shown below.
+Resource actions are indicated with the following symbols:
++ create
+~ update in-place
+- destroy
+
+Terraform will perform the following actions:
+
++ null_resource.test[0]
+      id: <computed>
+
++ null_resource.test[1]
+      id: <computed>
+
+~ aws_security_group_rule.allow_all
+      description: "" => "test3"
+
+- aws_security_group_rule.allow_all
+`, actOutput)
+}
+
+// Test that even if there's an error, we get the returned output.
+func TestRun_OutputOnErr(t *testing.T) {
+	RegisterMockTestingT(t)
+	terraform := mocks.NewMockClient()
+	tfVersion, _ := version.NewVersion("0.10.0")
+	s := runtime.PlanStepRunner{
+		TerraformExecutor: terraform,
+		DefaultTFVersion:  tfVersion,
+	}
+	expOutput := "expected output"
+	expErrMsg := "error!"
+	When(terraform.RunCommandWithVersion(
+		matchers.AnyPtrToLoggingSimpleLogger(),
+		AnyString(),
+		AnyStringSlice(),
+		matchers2.AnyPtrToGoVersionVersion(),
+		AnyString())).
+		Then(func(params []Param) ReturnValues {
+			// This code allows us to return different values depending on the
+			// tf command being run while still using the wildcard matchers above.
+			tfArgs := params[2].([]string)
+			if stringSliceEquals(tfArgs, []string{"workspace", "show"}) {
+				return []ReturnValue{"default\n", nil}
+			} else if tfArgs[0] == "plan" {
+				return []ReturnValue{expOutput, errors.New(expErrMsg)}
+			} else {
+				return []ReturnValue{"", errors.New("unexpected call to RunCommandWithVersion")}
+			}
+		})
+	actOutput, actErr := s.Run(models.ProjectCommandContext{Workspace: "default"}, nil, "")
+	ErrEquals(t, expErrMsg, actErr)
+	Equals(t, expOutput, actOutput)
+}
+
+func stringSliceEquals(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i, v := range a {
+		if v != b[i] {
+			return false
+		}
+	}
+	return true
 }

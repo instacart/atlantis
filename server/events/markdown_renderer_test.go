@@ -10,15 +10,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // Modified hereafter by contributors to runatlantis/atlantis.
-//
+
 package events_test
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/runatlantis/atlantis/server/events"
+	"github.com/runatlantis/atlantis/server/events/models"
 	. "github.com/runatlantis/atlantis/testing"
 )
 
@@ -34,32 +36,31 @@ func TestRenderErr(t *testing.T) {
 			"apply error",
 			events.ApplyCommand,
 			err,
-			"**Apply Error**\n```\nerr\n```\n\n",
+			"**Apply Error**\n```\nerr\n```\n",
 		},
 		{
 			"plan error",
 			events.PlanCommand,
 			err,
-			"**Plan Error**\n```\nerr\n```\n\n",
+			"**Plan Error**\n```\nerr\n```\n",
 		},
 	}
 
 	r := events.MarkdownRenderer{}
 	for _, c := range cases {
-		t.Run(c.Description, func(t *testing.T) {
-			res := events.CommandResult{
-				Error: c.Error,
-			}
-			for _, verbose := range []bool{true, false} {
-				t.Log("testing " + c.Description)
-				s := r.Render(res, c.Command, "log", verbose)
+		res := events.CommandResult{
+			Error: c.Error,
+		}
+		for _, verbose := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s_%t", c.Description, verbose), func(t *testing.T) {
+				s := r.Render(res, c.Command, "log", verbose, models.Github)
 				if !verbose {
 					Equals(t, c.Expected, s)
 				} else {
 					Equals(t, c.Expected+"<details><summary>Log</summary>\n  <p>\n\n```\nlog```\n</p></details>\n", s)
 				}
-			}
-		})
+			})
+		}
 	}
 }
 
@@ -74,44 +75,42 @@ func TestRenderFailure(t *testing.T) {
 			"apply failure",
 			events.ApplyCommand,
 			"failure",
-			"**Apply Failed**: failure\n\n",
+			"**Apply Failed**: failure\n",
 		},
 		{
 			"plan failure",
 			events.PlanCommand,
 			"failure",
-			"**Plan Failed**: failure\n\n",
+			"**Plan Failed**: failure\n",
 		},
 	}
 
 	r := events.MarkdownRenderer{}
 	for _, c := range cases {
-		t.Run(c.Description, func(t *testing.T) {
-			res := events.CommandResult{
-				Failure: c.Failure,
-			}
-			for _, verbose := range []bool{true, false} {
-				t.Log("testing " + c.Description)
-				s := r.Render(res, c.Command, "log", verbose)
+		res := events.CommandResult{
+			Failure: c.Failure,
+		}
+		for _, verbose := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s_%t", c.Description, verbose), func(t *testing.T) {
+				s := r.Render(res, c.Command, "log", verbose, models.Github)
 				if !verbose {
 					Equals(t, c.Expected, s)
 				} else {
 					Equals(t, c.Expected+"<details><summary>Log</summary>\n  <p>\n\n```\nlog```\n</p></details>\n", s)
 				}
-			}
-		})
+			})
+		}
 	}
 }
 
 func TestRenderErrAndFailure(t *testing.T) {
-	t.Log("if there is an error and a failure, the error should be printed")
 	r := events.MarkdownRenderer{}
 	res := events.CommandResult{
 		Error:   errors.New("error"),
 		Failure: "failure",
 	}
-	s := r.Render(res, events.PlanCommand, "", false)
-	Equals(t, "**Plan Error**\n```\nerror\n```\n\n", s)
+	s := r.Render(res, events.PlanCommand, "", false, models.Github)
+	Equals(t, "**Plan Error**\n```\nerror\n```\n", s)
 }
 
 func TestRenderProjectResults(t *testing.T) {
@@ -119,12 +118,14 @@ func TestRenderProjectResults(t *testing.T) {
 		Description    string
 		Command        events.CommandName
 		ProjectResults []events.ProjectResult
+		VCSHost        models.VCSHostType
 		Expected       string
 	}{
 		{
 			"no projects",
 			events.PlanCommand,
 			[]events.ProjectResult{},
+			models.Github,
 			"Ran Plan for 0 projects:\n\n\n",
 		},
 		{
@@ -132,33 +133,66 @@ func TestRenderProjectResults(t *testing.T) {
 			events.PlanCommand,
 			[]events.ProjectResult{
 				{
-					ProjectCommandResult: events.ProjectCommandResult{
-						PlanSuccess: &events.PlanSuccess{
-							TerraformOutput: "terraform-output",
-							LockURL:         "lock-url",
-							RePlanCmd:       "atlantis plan -d path -w workspace",
-							ApplyCmd:        "atlantis apply -d path -w workspace",
-						},
+					PlanSuccess: &events.PlanSuccess{
+						TerraformOutput: "terraform-output",
+						LockURL:         "lock-url",
+						RePlanCmd:       "atlantis plan -d path -w workspace",
+						ApplyCmd:        "atlantis apply -d path -w workspace",
 					},
 					Workspace:  "workspace",
 					RepoRelDir: "path",
 				},
 			},
-			`Ran Plan in dir: $path$ workspace: $workspace$
+			models.Github,
+			`Ran Plan for dir: $path$ workspace: $workspace$
 
 $$$diff
 terraform-output
 $$$
 
 * :arrow_forward: To **apply** this plan, comment:
-  * $atlantis apply -d path -w workspace$
+    * $atlantis apply -d path -w workspace$
 * :put_litter_in_its_place: To **delete** this plan click [here](lock-url)
 * :repeat: To **plan** this project again, comment:
-  * $atlantis plan -d path -w workspace$
+    * $atlantis plan -d path -w workspace$
 
 ---
-* :fast_forward: To **apply** all unapplied plans, comment:
-  * $atlantis apply$
+* :fast_forward: To **apply** all unapplied plans from this pull request, comment:
+    * $atlantis apply$
+`,
+		},
+		{
+			"single successful plan with project name",
+			events.PlanCommand,
+			[]events.ProjectResult{
+				{
+					PlanSuccess: &events.PlanSuccess{
+						TerraformOutput: "terraform-output",
+						LockURL:         "lock-url",
+						RePlanCmd:       "atlantis plan -d path -w workspace",
+						ApplyCmd:        "atlantis apply -d path -w workspace",
+					},
+					Workspace:   "workspace",
+					RepoRelDir:  "path",
+					ProjectName: "projectname",
+				},
+			},
+			models.Github,
+			`Ran Plan for project: $projectname$ dir: $path$ workspace: $workspace$
+
+$$$diff
+terraform-output
+$$$
+
+* :arrow_forward: To **apply** this plan, comment:
+    * $atlantis apply -d path -w workspace$
+* :put_litter_in_its_place: To **delete** this plan click [here](lock-url)
+* :repeat: To **plan** this project again, comment:
+    * $atlantis plan -d path -w workspace$
+
+---
+* :fast_forward: To **apply** all unapplied plans from this pull request, comment:
+    * $atlantis apply$
 `,
 		},
 		{
@@ -166,14 +200,33 @@ $$$
 			events.ApplyCommand,
 			[]events.ProjectResult{
 				{
-					ProjectCommandResult: events.ProjectCommandResult{
-						ApplySuccess: "success",
-					},
-					Workspace:  "workspace",
-					RepoRelDir: "path",
+					ApplySuccess: "success",
+					Workspace:    "workspace",
+					RepoRelDir:   "path",
 				},
 			},
-			`Ran Apply in dir: $path$ workspace: $workspace$
+			models.Github,
+			`Ran Apply for dir: $path$ workspace: $workspace$
+
+$$$diff
+success
+$$$
+
+`,
+		},
+		{
+			"single successful apply with project name",
+			events.ApplyCommand,
+			[]events.ProjectResult{
+				{
+					ApplySuccess: "success",
+					Workspace:    "workspace",
+					RepoRelDir:   "path",
+					ProjectName:  "projectname",
+				},
+			},
+			models.Github,
+			`Ran Apply for project: $projectname$ dir: $path$ workspace: $workspace$
 
 $$$diff
 success
@@ -188,56 +241,56 @@ $$$
 				{
 					Workspace:  "workspace",
 					RepoRelDir: "path",
-					ProjectCommandResult: events.ProjectCommandResult{
-						PlanSuccess: &events.PlanSuccess{
-							TerraformOutput: "terraform-output",
-							LockURL:         "lock-url",
-							ApplyCmd:        "atlantis apply -d path -w workspace",
-							RePlanCmd:       "atlantis plan -d path -w workspace",
-						},
+					PlanSuccess: &events.PlanSuccess{
+						TerraformOutput: "terraform-output",
+						LockURL:         "lock-url",
+						ApplyCmd:        "atlantis apply -d path -w workspace",
+						RePlanCmd:       "atlantis plan -d path -w workspace",
 					},
 				},
 				{
-					Workspace:  "workspace",
-					RepoRelDir: "path2",
-					ProjectCommandResult: events.ProjectCommandResult{
-						PlanSuccess: &events.PlanSuccess{
-							TerraformOutput: "terraform-output2",
-							LockURL:         "lock-url2",
-							ApplyCmd:        "atlantis apply -d path2 -w workspace",
-							RePlanCmd:       "atlantis plan -d path2 -w workspace",
-						},
+					Workspace:   "workspace",
+					RepoRelDir:  "path2",
+					ProjectName: "projectname",
+					PlanSuccess: &events.PlanSuccess{
+						TerraformOutput: "terraform-output2",
+						LockURL:         "lock-url2",
+						ApplyCmd:        "atlantis apply -d path2 -w workspace",
+						RePlanCmd:       "atlantis plan -d path2 -w workspace",
 					},
 				},
 			},
+			models.Github,
 			`Ran Plan for 2 projects:
-1. workspace: $workspace$ dir: $path$
-1. workspace: $workspace$ dir: $path2$
+1. dir: $path$ workspace: $workspace$
+1. project: $projectname$ dir: $path2$ workspace: $workspace$
 
-### 1. workspace: $workspace$ dir: $path$
+### 1. dir: $path$ workspace: $workspace$
 $$$diff
 terraform-output
 $$$
 
 * :arrow_forward: To **apply** this plan, comment:
-  * $atlantis apply -d path -w workspace$
+    * $atlantis apply -d path -w workspace$
 * :put_litter_in_its_place: To **delete** this plan click [here](lock-url)
 * :repeat: To **plan** this project again, comment:
-  * $atlantis plan -d path -w workspace$
+    * $atlantis plan -d path -w workspace$
+
 ---
-### 2. workspace: $workspace$ dir: $path2$
+### 2. project: $projectname$ dir: $path2$ workspace: $workspace$
 $$$diff
 terraform-output2
 $$$
 
 * :arrow_forward: To **apply** this plan, comment:
-  * $atlantis apply -d path2 -w workspace$
+    * $atlantis apply -d path2 -w workspace$
 * :put_litter_in_its_place: To **delete** this plan click [here](lock-url2)
 * :repeat: To **plan** this project again, comment:
-  * $atlantis plan -d path2 -w workspace$
+    * $atlantis plan -d path2 -w workspace$
+
 ---
-* :fast_forward: To **apply** all unapplied plans, comment:
-  * $atlantis apply$
+* :fast_forward: To **apply** all unapplied plans from this pull request, comment:
+    * $atlantis apply$
 `,
 		},
 		{
@@ -245,33 +298,33 @@ $$$
 			events.ApplyCommand,
 			[]events.ProjectResult{
 				{
-					RepoRelDir: "path",
-					Workspace:  "workspace",
-					ProjectCommandResult: events.ProjectCommandResult{
-						ApplySuccess: "success",
-					},
+					RepoRelDir:   "path",
+					Workspace:    "workspace",
+					ProjectName:  "projectname",
+					ApplySuccess: "success",
 				},
 				{
-					RepoRelDir: "path2",
-					Workspace:  "workspace",
-					ProjectCommandResult: events.ProjectCommandResult{
-						ApplySuccess: "success2",
-					},
+					RepoRelDir:   "path2",
+					Workspace:    "workspace",
+					ApplySuccess: "success2",
 				},
 			},
+			models.Github,
 			`Ran Apply for 2 projects:
-1. workspace: $workspace$ dir: $path$
-1. workspace: $workspace$ dir: $path2$
+1. project: $projectname$ dir: $path$ workspace: $workspace$
+1. dir: $path2$ workspace: $workspace$
 
-### 1. workspace: $workspace$ dir: $path$
+### 1. project: $projectname$ dir: $path$ workspace: $workspace$
 $$$diff
 success
 $$$
+
 ---
-### 2. workspace: $workspace$ dir: $path2$
+### 2. dir: $path2$ workspace: $workspace$
 $$$diff
 success2
 $$$
+
 ---
 
 `,
@@ -281,20 +334,18 @@ $$$
 			events.PlanCommand,
 			[]events.ProjectResult{
 				{
-					ProjectCommandResult: events.ProjectCommandResult{
-						Error: errors.New("error"),
-					},
+					Error:      errors.New("error"),
 					RepoRelDir: "path",
 					Workspace:  "workspace",
 				},
 			},
-			`Ran Plan in dir: $path$ workspace: $workspace$
+			models.Github,
+			`Ran Plan for dir: $path$ workspace: $workspace$
 
 **Plan Error**
 $$$
 error
 $$$
-
 
 `,
 		},
@@ -305,15 +356,13 @@ $$$
 				{
 					RepoRelDir: "path",
 					Workspace:  "workspace",
-					ProjectCommandResult: events.ProjectCommandResult{
-						Failure: "failure",
-					},
+					Failure:    "failure",
 				},
 			},
-			`Ran Plan in dir: $path$ workspace: $workspace$
+			models.Github,
+			`Ran Plan for dir: $path$ workspace: $workspace$
 
 **Plan Failed**: failure
-
 
 `,
 		},
@@ -324,59 +373,56 @@ $$$
 				{
 					Workspace:  "workspace",
 					RepoRelDir: "path",
-					ProjectCommandResult: events.ProjectCommandResult{
-						PlanSuccess: &events.PlanSuccess{
-							TerraformOutput: "terraform-output",
-							LockURL:         "lock-url",
-							ApplyCmd:        "atlantis apply -d path -w workspace",
-							RePlanCmd:       "atlantis plan -d path -w workspace",
-						},
+					PlanSuccess: &events.PlanSuccess{
+						TerraformOutput: "terraform-output",
+						LockURL:         "lock-url",
+						ApplyCmd:        "atlantis apply -d path -w workspace",
+						RePlanCmd:       "atlantis plan -d path -w workspace",
 					},
 				},
 				{
 					Workspace:  "workspace",
 					RepoRelDir: "path2",
-					ProjectCommandResult: events.ProjectCommandResult{
-						Failure: "failure",
-					},
+					Failure:    "failure",
 				},
 				{
-					Workspace:  "workspace",
-					RepoRelDir: "path3",
-					ProjectCommandResult: events.ProjectCommandResult{
-						Error: errors.New("error"),
-					},
+					Workspace:   "workspace",
+					RepoRelDir:  "path3",
+					ProjectName: "projectname",
+					Error:       errors.New("error"),
 				},
 			},
+			models.Github,
 			`Ran Plan for 3 projects:
-1. workspace: $workspace$ dir: $path$
-1. workspace: $workspace$ dir: $path2$
-1. workspace: $workspace$ dir: $path3$
+1. dir: $path$ workspace: $workspace$
+1. dir: $path2$ workspace: $workspace$
+1. project: $projectname$ dir: $path3$ workspace: $workspace$
 
-### 1. workspace: $workspace$ dir: $path$
+### 1. dir: $path$ workspace: $workspace$
 $$$diff
 terraform-output
 $$$
 
 * :arrow_forward: To **apply** this plan, comment:
-  * $atlantis apply -d path -w workspace$
+    * $atlantis apply -d path -w workspace$
 * :put_litter_in_its_place: To **delete** this plan click [here](lock-url)
 * :repeat: To **plan** this project again, comment:
-  * $atlantis plan -d path -w workspace$
+    * $atlantis plan -d path -w workspace$
+
 ---
-### 2. workspace: $workspace$ dir: $path2$
+### 2. dir: $path2$ workspace: $workspace$
 **Plan Failed**: failure
 
 ---
-### 3. workspace: $workspace$ dir: $path3$
+### 3. project: $projectname$ dir: $path3$ workspace: $workspace$
 **Plan Error**
 $$$
 error
 $$$
 
 ---
-* :fast_forward: To **apply** all unapplied plans, comment:
-  * $atlantis apply$
+* :fast_forward: To **apply** all unapplied plans from this pull request, comment:
+    * $atlantis apply$
 `,
 		},
 		{
@@ -384,42 +430,84 @@ $$$
 			events.ApplyCommand,
 			[]events.ProjectResult{
 				{
-					Workspace:  "workspace",
-					RepoRelDir: "path",
-					ProjectCommandResult: events.ProjectCommandResult{
-						ApplySuccess: "success",
-					},
+					Workspace:    "workspace",
+					RepoRelDir:   "path",
+					ApplySuccess: "success",
 				},
 				{
 					Workspace:  "workspace",
 					RepoRelDir: "path2",
-					ProjectCommandResult: events.ProjectCommandResult{
-						Failure: "failure",
-					},
+					Failure:    "failure",
 				},
 				{
 					Workspace:  "workspace",
 					RepoRelDir: "path3",
-					ProjectCommandResult: events.ProjectCommandResult{
-						Error: errors.New("error"),
-					},
+					Error:      errors.New("error"),
 				},
 			},
+			models.Github,
 			`Ran Apply for 3 projects:
-1. workspace: $workspace$ dir: $path$
-1. workspace: $workspace$ dir: $path2$
-1. workspace: $workspace$ dir: $path3$
+1. dir: $path$ workspace: $workspace$
+1. dir: $path2$ workspace: $workspace$
+1. dir: $path3$ workspace: $workspace$
 
-### 1. workspace: $workspace$ dir: $path$
+### 1. dir: $path$ workspace: $workspace$
 $$$diff
 success
 $$$
+
 ---
-### 2. workspace: $workspace$ dir: $path2$
+### 2. dir: $path2$ workspace: $workspace$
 **Apply Failed**: failure
 
 ---
-### 3. workspace: $workspace$ dir: $path3$
+### 3. dir: $path3$ workspace: $workspace$
+**Apply Error**
+$$$
+error
+$$$
+
+---
+
+`,
+		},
+		{
+			"successful, failed, and errored apply",
+			events.ApplyCommand,
+			[]events.ProjectResult{
+				{
+					Workspace:    "workspace",
+					RepoRelDir:   "path",
+					ApplySuccess: "success",
+				},
+				{
+					Workspace:  "workspace",
+					RepoRelDir: "path2",
+					Failure:    "failure",
+				},
+				{
+					Workspace:  "workspace",
+					RepoRelDir: "path3",
+					Error:      errors.New("error"),
+				},
+			},
+			models.Github,
+			`Ran Apply for 3 projects:
+1. dir: $path$ workspace: $workspace$
+1. dir: $path2$ workspace: $workspace$
+1. dir: $path3$ workspace: $workspace$
+
+### 1. dir: $path$ workspace: $workspace$
+$$$diff
+success
+$$$
+
+---
+### 2. dir: $path2$ workspace: $workspace$
+**Apply Failed**: failure
+
+---
+### 3. dir: $path3$ workspace: $workspace$
 **Apply Error**
 $$$
 error
@@ -439,7 +527,7 @@ $$$
 			}
 			for _, verbose := range []bool{true, false} {
 				t.Run(c.Description, func(t *testing.T) {
-					s := r.Render(res, c.Command, "log", verbose)
+					s := r.Render(res, c.Command, "log", verbose, c.VCSHost)
 					expWithBackticks := strings.Replace(c.Expected, "$", "`", -1)
 					if !verbose {
 						Equals(t, expWithBackticks, s)
@@ -450,4 +538,396 @@ $$$
 			}
 		})
 	}
+}
+
+// Test that if the output is longer than 12 lines, it gets wrapped on the right
+// VCS hosts during an error.
+func TestRenderProjectResults_WrappedErr(t *testing.T) {
+	cases := []struct {
+		VCSHost                 models.VCSHostType
+		GitlabCommonMarkSupport bool
+		Output                  string
+		ShouldWrap              bool
+	}{
+		{
+			VCSHost:    models.Github,
+			Output:     strings.Repeat("line\n", 1),
+			ShouldWrap: false,
+		},
+		{
+			VCSHost:    models.Github,
+			Output:     strings.Repeat("line\n", 13),
+			ShouldWrap: true,
+		},
+		{
+			VCSHost:                 models.Gitlab,
+			GitlabCommonMarkSupport: false,
+			Output:                  strings.Repeat("line\n", 1),
+			ShouldWrap:              false,
+		},
+		{
+			VCSHost:                 models.Gitlab,
+			GitlabCommonMarkSupport: false,
+			Output:                  strings.Repeat("line\n", 13),
+			ShouldWrap:              false,
+		},
+		{
+			VCSHost:                 models.Gitlab,
+			GitlabCommonMarkSupport: true,
+			Output:                  strings.Repeat("line\n", 1),
+			ShouldWrap:              false,
+		},
+		{
+			VCSHost:                 models.Gitlab,
+			GitlabCommonMarkSupport: true,
+			Output:                  strings.Repeat("line\n", 13),
+			ShouldWrap:              true,
+		},
+		{
+			VCSHost:    models.BitbucketCloud,
+			Output:     strings.Repeat("line\n", 1),
+			ShouldWrap: false,
+		},
+		{
+			VCSHost:    models.BitbucketCloud,
+			Output:     strings.Repeat("line\n", 13),
+			ShouldWrap: false,
+		},
+		{
+			VCSHost:    models.BitbucketServer,
+			Output:     strings.Repeat("line\n", 1),
+			ShouldWrap: false,
+		},
+		{
+			VCSHost:    models.BitbucketServer,
+			Output:     strings.Repeat("line\n", 13),
+			ShouldWrap: false,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(fmt.Sprintf("%s_%v", c.VCSHost.String(), c.ShouldWrap),
+			func(t *testing.T) {
+				mr := events.MarkdownRenderer{
+					GitlabSupportsCommonMark: c.GitlabCommonMarkSupport,
+				}
+
+				rendered := mr.Render(events.CommandResult{
+					ProjectResults: []events.ProjectResult{
+						{
+							RepoRelDir: ".",
+							Workspace:  "default",
+							Error:      errors.New(c.Output),
+						},
+					},
+				}, events.PlanCommand, "log", false, c.VCSHost)
+				var exp string
+				if c.ShouldWrap {
+					exp = `Ran Plan for dir: $.$ workspace: $default$
+
+**Plan Error**
+<details><summary>Show Output</summary>
+
+$$$
+` + c.Output + `
+$$$
+</details>
+
+`
+				} else {
+					exp = `Ran Plan for dir: $.$ workspace: $default$
+
+**Plan Error**
+$$$
+` + c.Output + `
+$$$
+
+`
+				}
+
+				expWithBackticks := strings.Replace(exp, "$", "`", -1)
+				Equals(t, expWithBackticks, rendered)
+			})
+	}
+}
+
+// Test that if the output is longer than 12 lines, it gets wrapped on the right
+// VCS hosts for a single project.
+func TestRenderProjectResults_WrapSingleProject(t *testing.T) {
+	cases := []struct {
+		VCSHost                 models.VCSHostType
+		GitlabCommonMarkSupport bool
+		Output                  string
+		ShouldWrap              bool
+	}{
+		{
+			VCSHost:    models.Github,
+			Output:     strings.Repeat("line\n", 1),
+			ShouldWrap: false,
+		},
+		{
+			VCSHost:    models.Github,
+			Output:     strings.Repeat("line\n", 13),
+			ShouldWrap: true,
+		},
+		{
+			VCSHost:                 models.Gitlab,
+			GitlabCommonMarkSupport: false,
+			Output:                  strings.Repeat("line\n", 1),
+			ShouldWrap:              false,
+		},
+		{
+			VCSHost:                 models.Gitlab,
+			GitlabCommonMarkSupport: false,
+			Output:                  strings.Repeat("line\n", 13),
+			ShouldWrap:              false,
+		},
+		{
+			VCSHost:                 models.Gitlab,
+			GitlabCommonMarkSupport: true,
+			Output:                  strings.Repeat("line\n", 1),
+			ShouldWrap:              false,
+		},
+		{
+			VCSHost:                 models.Gitlab,
+			GitlabCommonMarkSupport: true,
+			Output:                  strings.Repeat("line\n", 13),
+			ShouldWrap:              true,
+		},
+		{
+			VCSHost:    models.BitbucketCloud,
+			Output:     strings.Repeat("line\n", 1),
+			ShouldWrap: false,
+		},
+		{
+			VCSHost:    models.BitbucketCloud,
+			Output:     strings.Repeat("line\n", 13),
+			ShouldWrap: false,
+		},
+		{
+			VCSHost:    models.BitbucketServer,
+			Output:     strings.Repeat("line\n", 1),
+			ShouldWrap: false,
+		},
+		{
+			VCSHost:    models.BitbucketServer,
+			Output:     strings.Repeat("line\n", 13),
+			ShouldWrap: false,
+		},
+	}
+
+	for _, c := range cases {
+		for _, cmd := range []events.CommandName{events.PlanCommand, events.ApplyCommand} {
+			t.Run(fmt.Sprintf("%s_%s_%v", c.VCSHost.String(), cmd.String(), c.ShouldWrap),
+				func(t *testing.T) {
+					mr := events.MarkdownRenderer{
+						GitlabSupportsCommonMark: c.GitlabCommonMarkSupport,
+					}
+					var pr events.ProjectResult
+					switch cmd {
+					case events.PlanCommand:
+						pr = events.ProjectResult{
+							RepoRelDir: ".",
+							Workspace:  "default",
+							PlanSuccess: &events.PlanSuccess{
+								TerraformOutput: c.Output,
+								LockURL:         "lock-url",
+								RePlanCmd:       "replancmd",
+								ApplyCmd:        "applycmd",
+							},
+						}
+					case events.ApplyCommand:
+						pr = events.ProjectResult{
+							RepoRelDir:   ".",
+							Workspace:    "default",
+							ApplySuccess: c.Output,
+						}
+					}
+					rendered := mr.Render(events.CommandResult{
+						ProjectResults: []events.ProjectResult{pr},
+					}, cmd, "log", false, c.VCSHost)
+
+					// Check result.
+					var exp string
+					switch cmd {
+					case events.PlanCommand:
+						if c.ShouldWrap {
+							exp = `Ran Plan for dir: $.$ workspace: $default$
+
+<details><summary>Show Output</summary>
+
+$$$diff
+` + c.Output + `
+$$$
+
+* :arrow_forward: To **apply** this plan, comment:
+    * $applycmd$
+* :put_litter_in_its_place: To **delete** this plan click [here](lock-url)
+* :repeat: To **plan** this project again, comment:
+    * $replancmd$
+</details>
+
+---
+* :fast_forward: To **apply** all unapplied plans from this pull request, comment:
+    * $atlantis apply$
+`
+						} else {
+							exp = `Ran Plan for dir: $.$ workspace: $default$
+
+$$$diff
+` + c.Output + `
+$$$
+
+* :arrow_forward: To **apply** this plan, comment:
+    * $applycmd$
+* :put_litter_in_its_place: To **delete** this plan click [here](lock-url)
+* :repeat: To **plan** this project again, comment:
+    * $replancmd$
+
+---
+* :fast_forward: To **apply** all unapplied plans from this pull request, comment:
+    * $atlantis apply$
+`
+						}
+					case events.ApplyCommand:
+						if c.ShouldWrap {
+							exp = `Ran Apply for dir: $.$ workspace: $default$
+
+<details><summary>Show Output</summary>
+
+$$$diff
+` + c.Output + `
+$$$
+</details>
+
+`
+						} else {
+							exp = `Ran Apply for dir: $.$ workspace: $default$
+
+$$$diff
+` + c.Output + `
+$$$
+
+`
+						}
+					}
+
+					expWithBackticks := strings.Replace(exp, "$", "`", -1)
+					Equals(t, expWithBackticks, rendered)
+				})
+		}
+	}
+}
+
+func TestRenderProjectResults_MultiProjectApplyWrapped(t *testing.T) {
+	mr := events.MarkdownRenderer{}
+	tfOut := strings.Repeat("line\n", 13)
+	rendered := mr.Render(events.CommandResult{
+		ProjectResults: []events.ProjectResult{
+			{
+				RepoRelDir:   ".",
+				Workspace:    "staging",
+				ApplySuccess: tfOut,
+			},
+			{
+				RepoRelDir:   ".",
+				Workspace:    "production",
+				ApplySuccess: tfOut,
+			},
+		},
+	}, events.ApplyCommand, "log", false, models.Github)
+	exp := `Ran Apply for 2 projects:
+1. dir: $.$ workspace: $staging$
+1. dir: $.$ workspace: $production$
+
+### 1. dir: $.$ workspace: $staging$
+<details><summary>Show Output</summary>
+
+$$$diff
+` + tfOut + `
+$$$
+</details>
+
+---
+### 2. dir: $.$ workspace: $production$
+<details><summary>Show Output</summary>
+
+$$$diff
+` + tfOut + `
+$$$
+</details>
+
+---
+
+`
+	expWithBackticks := strings.Replace(exp, "$", "`", -1)
+	Equals(t, expWithBackticks, rendered)
+}
+
+func TestRenderProjectResults_MultiProjectPlanWrapped(t *testing.T) {
+	mr := events.MarkdownRenderer{}
+	tfOut := strings.Repeat("line\n", 13)
+	rendered := mr.Render(events.CommandResult{
+		ProjectResults: []events.ProjectResult{
+			{
+				RepoRelDir: ".",
+				Workspace:  "staging",
+				PlanSuccess: &events.PlanSuccess{
+					TerraformOutput: tfOut,
+					LockURL:         "staging-lock-url",
+					ApplyCmd:        "staging-apply-cmd",
+					RePlanCmd:       "staging-replan-cmd",
+				},
+			},
+			{
+				RepoRelDir: ".",
+				Workspace:  "production",
+				PlanSuccess: &events.PlanSuccess{
+					TerraformOutput: tfOut,
+					LockURL:         "production-lock-url",
+					ApplyCmd:        "production-apply-cmd",
+					RePlanCmd:       "production-replan-cmd",
+				},
+			},
+		},
+	}, events.PlanCommand, "log", false, models.Github)
+	exp := `Ran Plan for 2 projects:
+1. dir: $.$ workspace: $staging$
+1. dir: $.$ workspace: $production$
+
+### 1. dir: $.$ workspace: $staging$
+<details><summary>Show Output</summary>
+
+$$$diff
+` + tfOut + `
+$$$
+
+* :arrow_forward: To **apply** this plan, comment:
+    * $staging-apply-cmd$
+* :put_litter_in_its_place: To **delete** this plan click [here](staging-lock-url)
+* :repeat: To **plan** this project again, comment:
+    * $staging-replan-cmd$
+</details>
+
+---
+### 2. dir: $.$ workspace: $production$
+<details><summary>Show Output</summary>
+
+$$$diff
+` + tfOut + `
+$$$
+
+* :arrow_forward: To **apply** this plan, comment:
+    * $production-apply-cmd$
+* :put_litter_in_its_place: To **delete** this plan click [here](production-lock-url)
+* :repeat: To **plan** this project again, comment:
+    * $production-replan-cmd$
+</details>
+
+---
+* :fast_forward: To **apply** all unapplied plans from this pull request, comment:
+    * $atlantis apply$
+`
+	expWithBackticks := strings.Replace(exp, "$", "`", -1)
+	Equals(t, expWithBackticks, rendered)
 }

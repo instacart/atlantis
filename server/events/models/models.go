@@ -31,10 +31,11 @@ import (
 // Repo is a VCS repository.
 type Repo struct {
 	// FullName is the owner and repo name separated
-	// by a "/", ex. "runatlantis/atlantis" or "gitlab/subgroup/atlantis"
+	// by a "/", ex. "runatlantis/atlantis", "gitlab/subgroup/atlantis", "Bitbucket Server/atlantis".
 	FullName string
 	// Owner is just the repo owner, ex. "runatlantis" or "gitlab/subgroup".
 	// This may contain /'s in the case of GitLab subgroups.
+	// This may contain spaces in the case of Bitbucket Server.
 	Owner string
 	// Name is just the repo name, ex. "atlantis". This will never have
 	// /'s in it.
@@ -313,4 +314,13 @@ func SplitRepoFullName(repoFullName string) (owner string, repo string) {
 		return "", ""
 	}
 	return repoFullName[:lastSlashIdx], repoFullName[lastSlashIdx+1:]
+}
+
+// GetProjectName returns the name of the project this context is for. If no
+// name is configured, it returns an empty string.
+func (p *ProjectCommandContext) GetProjectName() string {
+	if p.ProjectConfig != nil {
+		return p.ProjectConfig.GetName()
+	}
+	return ""
 }

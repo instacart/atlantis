@@ -1,4 +1,4 @@
-Ran Plan in dir: `production` workspace: `default`
+Ran Plan for dir: `production` workspace: `default`
 ```diff
 Refreshing Terraform state in-memory prior to plan...
 The refreshed state will be used to calculate this plan, but will not be
@@ -20,8 +20,8 @@ Plan: 1 to add, 0 to change, 0 to destroy.
 ```
 
 * :arrow_forward: To **apply** this plan, comment:
-  * `atlantis apply -d production`
+    * `atlantis apply -d production`
 * :put_litter_in_its_place: To **delete** this plan click [here](lock-url)
 * :repeat: To **plan** this project again, comment:
-  * `atlantis plan -d production`
+    * `atlantis plan -d production`
 

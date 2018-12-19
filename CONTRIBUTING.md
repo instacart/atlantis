@@ -44,6 +44,15 @@ atlantis server --gh-user <your username> --gh-token <your token> --repo-whiteli
 ```
 If you get an error like `command not found: atlantis`, ensure that `$GOPATH/bin` is in your `$PATH`.
 
+Running Tests Locally:
+
+`make test`. If you want to run the integration tests that actually run real `terraform` commands, run `make test-all`.
+
+Running Tests In Docker:
+```
+docker run --rm -v $(pwd):/go/src/github.com/runatlantis/atlantis -w /go/src/github.com/runatlantis/atlantis runatlantis/testing-env make test
+```
+
 ## Calling Your Local Atlantis From GitHub
 - Create a test terraform repository in your GitHub.
 - Create a personal access token for Atlantis. See [Create a GitHub token](https://github.com/runatlantis/atlantis#create-a-github-token).
@@ -109,8 +118,7 @@ func TestLockingExisting(t *testing.T) {
 - each test should have a `t.Log` that describes what the current state is and what should happen (like a behavioural test)
 
 # Creating a New Release
-1. Update version number in
-    1. `main.go`
+1. Update version number in `main.go`.
 1. Update `CHANGELOG.md` with latest release number and information (this URL might be useful: https://github.com/runatlantis/atlantis/compare/v0.3.5...master)
 1. Create a pull request and merge to master
 1. Check out master and fetch latest
@@ -121,3 +129,4 @@ func TestLockingExisting(t *testing.T) {
     1. Fill in description by copying from the CHANGELOG just without the Downloads section
     1. Drag in binaries made with `make release`
 1. Re-run master branch build to ensure tag gets pushed to Docker hub: https://hub.docker.com/r/runatlantis/atlantis/tags/
+1. Update the default version in `Chart.yaml` in [the official Helm chart](https://github.com/helm/charts/blob/master/stable/atlantis/Chart.yaml).

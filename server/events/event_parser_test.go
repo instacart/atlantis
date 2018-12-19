@@ -10,7 +10,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // Modified hereafter by contributors to runatlantis/atlantis.
-//
+
 package events_test
 
 import (
@@ -274,27 +274,27 @@ func TestParseGitlabMergeEvent(t *testing.T) {
 	var event *gitlab.MergeEvent
 	err = json.Unmarshal(bytes, &event)
 	Ok(t, err)
-	pull, evType, actBaseRepo, actHeadRepo, actUser, err := parser.ParseGitlabMergeEvent(*event)
+	pull, evType, actBaseRepo, actHeadRepo, actUser, err := parser.ParseGitlabMergeRequestEvent(*event)
 	Ok(t, err)
 
 	expBaseRepo := models.Repo{
-		FullName:          "gitlabhq/gitlab-test",
-		Name:              "gitlab-test",
-		SanitizedCloneURL: "https://example.com/gitlabhq/gitlab-test.git",
-		Owner:             "gitlabhq",
-		CloneURL:          "https://gitlab-user:gitlab-token@example.com/gitlabhq/gitlab-test.git",
+		FullName:          "lkysow/atlantis-example",
+		Name:              "atlantis-example",
+		SanitizedCloneURL: "https://gitlab.com/lkysow/atlantis-example.git",
+		Owner:             "lkysow",
+		CloneURL:          "https://gitlab-user:gitlab-token@gitlab.com/lkysow/atlantis-example.git",
 		VCSHost: models.VCSHost{
-			Hostname: "example.com",
+			Hostname: "gitlab.com",
 			Type:     models.Gitlab,
 		},
 	}
 
 	Equals(t, models.PullRequest{
-		URL:        "http://example.com/diaspora/merge_requests/1",
-		Author:     "root",
-		Num:        1,
-		HeadCommit: "da1560886d4f094c3e6c9ef40349f7d38b5d27d7",
-		Branch:     "ms-viewport",
+		URL:        "https://gitlab.com/lkysow/atlantis-example/merge_requests/12",
+		Author:     "lkysow",
+		Num:        12,
+		HeadCommit: "d2eae324ca26242abca45d7b49d582cddb2a4f15",
+		Branch:     "patch-1",
 		State:      models.OpenPullState,
 		BaseRepo:   expBaseRepo,
 	}, pull)
@@ -302,21 +302,21 @@ func TestParseGitlabMergeEvent(t *testing.T) {
 
 	Equals(t, expBaseRepo, actBaseRepo)
 	Equals(t, models.Repo{
-		FullName:          "awesome_space/awesome_project",
-		Name:              "awesome_project",
-		SanitizedCloneURL: "http://example.com/awesome_space/awesome_project.git",
-		Owner:             "awesome_space",
-		CloneURL:          "http://gitlab-user:gitlab-token@example.com/awesome_space/awesome_project.git",
+		FullName:          "sourceorg/atlantis-example",
+		Name:              "atlantis-example",
+		SanitizedCloneURL: "https://gitlab.com/sourceorg/atlantis-example.git",
+		Owner:             "sourceorg",
+		CloneURL:          "https://gitlab-user:gitlab-token@gitlab.com/sourceorg/atlantis-example.git",
 		VCSHost: models.VCSHost{
-			Hostname: "example.com",
+			Hostname: "gitlab.com",
 			Type:     models.Gitlab,
 		},
 	}, actHeadRepo)
-	Equals(t, models.User{Username: "root"}, actUser)
+	Equals(t, models.User{Username: "lkysow"}, actUser)
 
 	t.Log("If the state is closed, should set field correctly.")
 	event.ObjectAttributes.State = "closed"
-	pull, _, _, _, _, err = parser.ParseGitlabMergeEvent(*event)
+	pull, _, _, _, _, err = parser.ParseGitlabMergeRequestEvent(*event)
 	Ok(t, err)
 	Equals(t, models.ClosedPullState, pull.State)
 }
@@ -330,7 +330,7 @@ func TestParseGitlabMergeEvent_Subgroup(t *testing.T) {
 	var event *gitlab.MergeEvent
 	err = json.Unmarshal(bytes, &event)
 	Ok(t, err)
-	pull, evType, actBaseRepo, actHeadRepo, actUser, err := parser.ParseGitlabMergeEvent(*event)
+	pull, evType, actBaseRepo, actHeadRepo, actUser, err := parser.ParseGitlabMergeRequestEvent(*event)
 	Ok(t, err)
 
 	expBaseRepo := models.Repo{
@@ -411,7 +411,7 @@ func TestParseGitlabMergeEvent_ActionType(t *testing.T) {
 			eventJSON := strings.Replace(mergeEventJSON, `"action": "open"`, fmt.Sprintf(`"action": %q`, c.action), 1)
 			err := json.Unmarshal([]byte(eventJSON), &event)
 			Ok(t, err)
-			_, evType, _, _, _, err := parser.ParseGitlabMergeEvent(*event)
+			_, evType, _, _, _, err := parser.ParseGitlabMergeRequestEvent(*event)
 			Ok(t, err)
 			Equals(t, c.exp, evType)
 		})
@@ -497,7 +497,7 @@ func TestParseGitlabMergeCommentEvent(t *testing.T) {
 	var event *gitlab.MergeCommentEvent
 	err = json.Unmarshal(bytes, &event)
 	Ok(t, err)
-	baseRepo, headRepo, user, err := parser.ParseGitlabMergeCommentEvent(*event)
+	baseRepo, headRepo, user, err := parser.ParseGitlabMergeRequestCommentEvent(*event)
 	Ok(t, err)
 	Equals(t, models.Repo{
 		FullName:          "gitlabhq/gitlab-test",
@@ -534,7 +534,7 @@ func TestParseGitlabMergeCommentEvent_Subgroup(t *testing.T) {
 	var event *gitlab.MergeCommentEvent
 	err = json.Unmarshal(bytes, &event)
 	Ok(t, err)
-	baseRepo, headRepo, user, err := parser.ParseGitlabMergeCommentEvent(*event)
+	baseRepo, headRepo, user, err := parser.ParseGitlabMergeRequestCommentEvent(*event)
 	Ok(t, err)
 
 	Equals(t, models.Repo{
@@ -667,12 +667,12 @@ func TestCommentCommand_String(t *testing.T) {
 }
 
 func TestParseBitbucketCloudCommentEvent_EmptyString(t *testing.T) {
-	_, _, _, _, _, err := parser.ParseBitbucketCloudCommentEvent([]byte(""))
+	_, _, _, _, _, err := parser.ParseBitbucketCloudPullCommentEvent([]byte(""))
 	ErrEquals(t, "parsing json: unexpected end of JSON input", err)
 }
 
 func TestParseBitbucketCloudCommentEvent_EmptyObject(t *testing.T) {
-	_, _, _, _, _, err := parser.ParseBitbucketCloudCommentEvent([]byte("{}"))
+	_, _, _, _, _, err := parser.ParseBitbucketCloudPullCommentEvent([]byte("{}"))
 	ErrContains(t, "Key: 'CommentEvent.CommonEventData.Actor' Error:Field validation for 'Actor' failed on the 'required' tag\nKey: 'CommentEvent.CommonEventData.Repository' Error:Field validation for 'Repository' failed on the 'required' tag\nKey: 'CommentEvent.CommonEventData.PullRequest' Error:Field validation for 'PullRequest' failed on the 'required' tag\nKey: 'CommentEvent.Comment' Error:Field validation for 'Comment' failed on the 'required' tag", err)
 }
 
@@ -681,7 +681,7 @@ func TestParseBitbucketCloudCommentEvent_CommitHashMissing(t *testing.T) {
 	bytes, err := ioutil.ReadFile(path)
 	Ok(t, err)
 	emptyCommitHash := strings.Replace(string(bytes), `        "hash": "e0624da46d3a",`, "", -1)
-	_, _, _, _, _, err = parser.ParseBitbucketCloudCommentEvent([]byte(emptyCommitHash))
+	_, _, _, _, _, err = parser.ParseBitbucketCloudPullCommentEvent([]byte(emptyCommitHash))
 	ErrContains(t, "Key: 'CommentEvent.CommonEventData.PullRequest.Source.Commit.Hash' Error:Field validation for 'Hash' failed on the 'required' tag", err)
 }
 
@@ -689,7 +689,7 @@ func TestParseBitbucketCloudCommentEvent_ValidEvent(t *testing.T) {
 	path := filepath.Join("testdata", "bitbucket-cloud-comment-event.json")
 	bytes, err := ioutil.ReadFile(path)
 	Ok(t, err)
-	pull, baseRepo, headRepo, user, comment, err := parser.ParseBitbucketCloudCommentEvent(bytes)
+	pull, baseRepo, headRepo, user, comment, err := parser.ParseBitbucketCloudPullCommentEvent(bytes)
 	Ok(t, err)
 	expBaseRepo := models.Repo{
 		FullName:          "lkysow/atlantis-example",
@@ -761,7 +761,7 @@ func TestParseBitbucketCloudCommentEvent_MultipleStates(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.pullState, func(t *testing.T) {
 			withState := strings.Replace(string(bytes), `"state": "MERGED"`, fmt.Sprintf(`"state": "%s"`, c.pullState), -1)
-			pull, _, _, _, _, err := parser.ParseBitbucketCloudCommentEvent([]byte(withState))
+			pull, _, _, _, _, err := parser.ParseBitbucketCloudPullCommentEvent([]byte(withState))
 			Ok(t, err)
 			Equals(t, c.exp, pull.State)
 		})
@@ -841,19 +841,19 @@ func TestGetBitbucketCloudEventType(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.header, func(t *testing.T) {
-			act := parser.GetBitbucketCloudEventType(c.header)
+			act := parser.GetBitbucketCloudPullEventType(c.header)
 			Equals(t, c.exp, act)
 		})
 	}
 }
 
 func TestParseBitbucketServerCommentEvent_EmptyString(t *testing.T) {
-	_, _, _, _, _, err := parser.ParseBitbucketServerCommentEvent([]byte(""))
+	_, _, _, _, _, err := parser.ParseBitbucketServerPullCommentEvent([]byte(""))
 	ErrEquals(t, "parsing json: unexpected end of JSON input", err)
 }
 
 func TestParseBitbucketServerCommentEvent_EmptyObject(t *testing.T) {
-	_, _, _, _, _, err := parser.ParseBitbucketServerCommentEvent([]byte("{}"))
+	_, _, _, _, _, err := parser.ParseBitbucketServerPullCommentEvent([]byte("{}"))
 	ErrContains(t, `API response "{}" was missing fields: Key: 'CommentEvent.CommonEventData.Actor' Error:Field validation for 'Actor' failed on the 'required' tag`, err)
 }
 
@@ -864,7 +864,7 @@ func TestParseBitbucketServerCommentEvent_CommitHashMissing(t *testing.T) {
 		Ok(t, err)
 	}
 	emptyCommitHash := strings.Replace(string(bytes), `"latestCommit": "bfb1af1ba9c2a2fa84cd61af67e6e1b60a22e060",`, "", -1)
-	_, _, _, _, _, err = parser.ParseBitbucketServerCommentEvent([]byte(emptyCommitHash))
+	_, _, _, _, _, err = parser.ParseBitbucketServerPullCommentEvent([]byte(emptyCommitHash))
 	ErrContains(t, "Key: 'CommentEvent.CommonEventData.PullRequest.FromRef.LatestCommit' Error:Field validation for 'LatestCommit' failed on the 'required' tag", err)
 }
 
@@ -874,7 +874,7 @@ func TestParseBitbucketServerCommentEvent_ValidEvent(t *testing.T) {
 	if err != nil {
 		Ok(t, err)
 	}
-	pull, baseRepo, headRepo, user, comment, err := parser.ParseBitbucketServerCommentEvent(bytes)
+	pull, baseRepo, headRepo, user, comment, err := parser.ParseBitbucketServerPullCommentEvent(bytes)
 	Ok(t, err)
 	expBaseRepo := models.Repo{
 		FullName:          "atlantis/atlantis-example",
@@ -942,7 +942,7 @@ func TestParseBitbucketServerCommentEvent_MultipleStates(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.pullState, func(t *testing.T) {
 			withState := strings.Replace(string(bytes), `"state": "OPEN"`, fmt.Sprintf(`"state": "%s"`, c.pullState), -1)
-			pull, _, _, _, _, err := parser.ParseBitbucketServerCommentEvent([]byte(withState))
+			pull, _, _, _, _, err := parser.ParseBitbucketServerPullCommentEvent([]byte(withState))
 			Ok(t, err)
 			Equals(t, c.exp, pull.State)
 		})
@@ -1018,7 +1018,7 @@ func TestGetBitbucketServerEventType(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.header, func(t *testing.T) {
-			act := parser.GetBitbucketServerEventType(c.header)
+			act := parser.GetBitbucketServerPullEventType(c.header)
 			Equals(t, c.exp, act)
 		})
 	}

@@ -10,12 +10,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // Modified hereafter by contributors to runatlantis/atlantis.
-//
+
 package vcs
 
 import (
 	"fmt"
+	"net"
 	"net/url"
+	"strings"
+
+	"github.com/hashicorp/go-version"
+	"github.com/pkg/errors"
+	"github.com/runatlantis/atlantis/server/logging"
 
 	"github.com/lkysow/go-gitlab"
 	"github.com/runatlantis/atlantis/server/events/models"
@@ -23,6 +29,65 @@ import (
 
 type GitlabClient struct {
 	Client *gitlab.Client
+	// Version is set to the server version.
+	Version *version.Version
+}
+
+// commonMarkSupported is a version constraint that is true when this version of
+// GitLab supports CommonMark, a markdown specification.
+// See https://about.gitlab.com/2018/07/22/gitlab-11-1-released/
+var commonMarkSupported = MustConstraint(">=11.1")
+
+// gitlabClientUnderTest is true if we're running under go test.
+var gitlabClientUnderTest = false
+
+// NewGitlabClient returns a valid GitLab client.
+func NewGitlabClient(hostname string, token string, logger *logging.SimpleLogger) (*GitlabClient, error) {
+	client := &GitlabClient{
+		Client: gitlab.NewClient(nil, token),
+	}
+
+	// If not using gitlab.com we need to set the URL to the API.
+	if hostname != "gitlab.com" {
+		// We assume the url will be over HTTPS if the user doesn't specify a scheme.
+		absoluteURL := hostname
+		if !strings.HasPrefix(hostname, "http://") && !strings.HasPrefix(hostname, "https://") {
+			absoluteURL = "https://" + absoluteURL
+		}
+
+		url, err := url.Parse(absoluteURL)
+		if err != nil {
+			return nil, errors.Wrapf(err, "parsing URL %q", absoluteURL)
+		}
+
+		// Warn if this hostname isn't resolvable. The GitLab client
+		// doesn't give good error messages in this case.
+		ips, err := net.LookupIP(url.Hostname())
+		if err != nil {
+			logger.Warn("unable to resolve %q: %s", url.Hostname(), err)
+		} else if len(ips) == 0 {
+			logger.Warn("found no IPs while resolving %q", url.Hostname())
+		}
+
+		// Now we're ready to construct the client.
+		absoluteURL = strings.TrimSuffix(absoluteURL, "/")
+		apiURL := fmt.Sprintf("%s/api/v4/", absoluteURL)
+		if err := client.Client.SetBaseURL(apiURL); err != nil {
+			return nil, errors.Wrapf(err, "setting GitLab API URL: %s", apiURL)
+		}
+	}
+
+	// Determine which version of GitLab is running.
+	if !gitlabClientUnderTest {
+		var err error
+		client.Version, err = client.GetVersion()
+		if err != nil {
+			return nil, err
+		}
+		logger.Info("determined GitLab is running version %s", client.Version.String())
+	}
+
+	return client, nil
 }
 
 // GetModifiedFiles returns the names of files that were modified in the merge request.
@@ -78,6 +143,30 @@ func (g *GitlabClient) PullIsApproved(repo models.Repo, pull models.PullRequest)
 	return true, nil
 }
 
+// PullIsMergeable returns true if the merge request can be merged.
+// In GitLab, there isn't a single field that tells us if the pull request is
+// mergeable so for now we check the merge_status and approvals_before_merge
+// fields. We aren't checking if there are unresolved discussions or failing
+// pipelines because those only block merges if the repo is set to require that.
+// In order to check if the repo required these, we'd need to make another API
+// call to get the repo settings. For now I'm going to leave this as is and if
+// some users require checking this as well then we can revisit.
+// It's also possible that GitLab implements their own "mergeable" field in
+// their API in the future.
+// See:
+// - https://gitlab.com/gitlab-org/gitlab-ee/issues/3169
+// - https://gitlab.com/gitlab-org/gitlab-ce/issues/42344
+func (g *GitlabClient) PullIsMergeable(repo models.Repo, pull models.PullRequest) (bool, error) {
+	mr, _, err := g.Client.MergeRequests.GetMergeRequest(repo.FullName, pull.Num)
+	if err != nil {
+		return false, err
+	}
+	if mr.MergeStatus == "can_be_merged" && mr.ApprovalsBeforeMerge <= 0 {
+		return true, nil
+	}
+	return false, nil
+}
+
 // UpdateStatus updates the build status of a commit.
 func (g *GitlabClient) UpdateStatus(repo models.Repo, pull models.PullRequest, state models.CommitStatus, description string) error {
 	const statusContext = "Atlantis"
@@ -102,4 +191,47 @@ func (g *GitlabClient) UpdateStatus(repo models.Repo, pull models.PullRequest, s
 func (g *GitlabClient) GetMergeRequest(repoFullName string, pullNum int) (*gitlab.MergeRequest, error) {
 	mr, _, err := g.Client.MergeRequests.GetMergeRequest(repoFullName, pullNum)
 	return mr, err
+}
+
+// GetVersion returns the version of the Gitlab server this client is using.
+func (g *GitlabClient) GetVersion() (*version.Version, error) {
+	req, err := g.Client.NewRequest("GET", "/version", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	versionResp := new(gitlab.Version)
+	_, err = g.Client.Do(req, versionResp)
+	if err != nil {
+		return nil, err
+	}
+	// We need to strip any "-ee" or similar from the resulting version because go-version
+	// uses that in its constraints and it breaks the comparison we're trying
+	// to do for Common Mark.
+	split := strings.Split(versionResp.Version, "-")
+	parsedVersion, err := version.NewVersion(split[0])
+	if err != nil {
+		return nil, errors.Wrapf(err, "parsing response to /version: %q", versionResp.Version)
+	}
+	return parsedVersion, nil
+}
+
+// SupportsCommonMark returns true if the version of Gitlab this client is
+// using supports the CommonMark markdown format.
+func (g *GitlabClient) SupportsCommonMark() bool {
+	// This function is called even if we didn't construct a gitlab client
+	// so we need to handle that case.
+	if g == nil {
+		return false
+	}
+
+	return commonMarkSupported.Check(g.Version)
+}
+
+// MustConstraint returns a constraint. It panics on error.
+func MustConstraint(constraint string) version.Constraints {
+	c, err := version.NewConstraint(constraint)
+	if err != nil {
+		panic(err)
+	}
+	return c
 }

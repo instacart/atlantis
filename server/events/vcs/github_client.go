@@ -10,24 +10,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // Modified hereafter by contributors to runatlantis/atlantis.
-//
+
 package vcs
 
 import (
 	"context"
 	"fmt"
-	"math"
 	"net/url"
 	"strings"
+
+	"github.com/runatlantis/atlantis/server/events/vcs/common"
 
 	"github.com/google/go-github/github"
 	"github.com/pkg/errors"
 	"github.com/runatlantis/atlantis/server/events/models"
 )
 
-// maxCommentBodySize is derived from the error message when you go over
-// this limit.
-const maxCommentBodySize = 65536
+// maxCommentLength is the maximum number of chars allowed in a single comment
+// by GitHub.
+const maxCommentLength = 65536
 
 // GithubClient is used to perform GitHub actions.
 type GithubClient struct {
@@ -91,7 +92,12 @@ func (g *GithubClient) GetModifiedFiles(repo models.Repo, pull models.PullReques
 // If comment length is greater than the max comment length we split into
 // multiple comments.
 func (g *GithubClient) CreateComment(repo models.Repo, pullNum int, comment string) error {
-	comments := g.splitAtMaxChars(comment, maxCommentBodySize, "\ncontinued...\n")
+	sepEnd := "\n```\n</details>" +
+		"\n<br>\n\n**Warning**: Output length greater than max comment size. Continued in next comment."
+	sepStart := "Continued from previous comment.\n<details><summary>Show Output</summary>\n\n" +
+		"```diff\n"
+
+	comments := common.SplitComment(comment, maxCommentLength, sepEnd, sepStart)
 	for _, c := range comments {
 		_, _, err := g.client.Issues.CreateComment(g.ctx, repo.Owner, repo.Name, pullNum, &github.IssueComment{Body: &c})
 		if err != nil {
@@ -113,6 +119,28 @@ func (g *GithubClient) PullIsApproved(repo models.Repo, pull models.PullRequest)
 		}
 	}
 	return false, nil
+}
+
+// PullIsMergeable returns true if the pull request is mergeable.
+func (g *GithubClient) PullIsMergeable(repo models.Repo, pull models.PullRequest) (bool, error) {
+	githubPR, err := g.GetPullRequest(repo, pull.Num)
+	if err != nil {
+		return false, errors.Wrap(err, "getting pull request")
+	}
+	state := githubPR.GetMergeableState()
+	// We map our mergeable check to when the GitHub merge button is clickable.
+	// This corresponds to the following states:
+	// clean: No conflicts, all requirements satisfied.
+	//        Merging is allowed (green box).
+	// unstable: Failing/pending commit status that is not part of the required
+	//           status checks. Merging is allowed (yellow box).
+	// has_hooks: GitHub Enterprise only, if a repo has custom pre-receive
+	//            hooks. Merging is allowed (green box).
+	// See: https://github.com/octokit/octokit.net/issues/1763
+	if state != "clean" && state != "unstable" && state != "has_hooks" {
+		return false, nil
+	}
+	return true, nil
 }
 
 // GetPullRequest returns the pull request.
@@ -140,41 +168,4 @@ func (g *GithubClient) UpdateStatus(repo models.Repo, pull models.PullRequest, s
 		Context:     github.String(statusContext)}
 	_, _, err := g.client.Repositories.CreateStatus(g.ctx, repo.Owner, repo.Name, pull.HeadCommit, status)
 	return err
-}
-
-// splitAtMaxChars splits comment into a slice with string up to max
-// len separated by join which gets appended to the ends of the middle strings.
-// If max <= len(join) we return an empty slice since this is an edge case we
-// don't want to handle.
-// nolint: unparam
-func (g *GithubClient) splitAtMaxChars(comment string, max int, join string) []string {
-	// If we're under the limit then no need to split.
-	if len(comment) <= max {
-		return []string{comment}
-	}
-
-	// If we can't fit the joining string in then this doesn't make sense.
-	if max <= len(join) {
-		return nil
-	}
-
-	var comments []string
-	maxSize := max - len(join)
-	numComments := int(math.Ceil(float64(len(comment)) / float64(maxSize)))
-	for i := 0; i < numComments; i++ {
-		upTo := g.min(len(comment), (i+1)*maxSize)
-		portion := comment[i*maxSize : upTo]
-		if i < numComments-1 {
-			portion += join
-		}
-		comments = append(comments, portion)
-	}
-	return comments
-}
-
-func (g *GithubClient) min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

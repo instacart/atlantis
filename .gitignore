@@ -1,5 +1,5 @@
 .idea
-atlantis
+./atlantis
 *.iml
 .vscode
 atlantis.db
@@ -9,3 +9,5 @@ output
 .terraform/
 node_modules/
 **/.vuepress/dist
+helm/test-values.yaml
+*.swp

@@ -1,10 +1,6 @@
 # Production-Ready Deployment
 [[toc]]
 
-::: tip
-Don't want to host Atlantis yourself? Check out [Hosted Atlantis](/hosting/).
-:::
-
 ## Install Terraform
 `terraform` needs to be in the `$PATH` for Atlantis.
 Download from https://www.terraform.io/downloads.html
@@ -23,6 +19,9 @@ Atlantis needs to be hosted somewhere that github.com/gitlab.com/bitbucket.org o
 Developers in your organization also need to be able to access Atlantis to view the UI and to delete locks.
 
 By default Atlantis runs on port `4141`. This can be changed with the `--port` flag.
+
+## Install Atlantis
+Get the latest release from [https://github.com/runatlantis/atlantis/releases](https://github.com/runatlantis/atlantis/releases) and unpackage it.
 
 ## Add Webhook
 Once you've decided where to host Atlantis you need to add that URL as a webhook
@@ -44,6 +43,7 @@ If installing on a single repository, navigate to the repository home page and c
 - double-check you added `/events` to the end of your URL.
 - set **Content type** to `application/json`
 - set **Secret** to a random key (https://www.random.org/strings/). You'll need to pass this value to the `--gh-webhook-secret` flag when you start Atlantis
+  - **NOTE** If you're adding a webhook to multiple repositories, each repository will need to use the **same** secret.
 - select **Let me select individual events**
 - check the boxes
 	- **Pull request reviews**
@@ -59,6 +59,7 @@ If you're using GitLab, navigate to your project's home page in GitLab
 - set **URL** to `http://$URL/events` (or `https://$URL/events` if you're using SSL) where `$URL` is where Atlantis is hosted. **Be sure to add `/events`**
 - double-check you added `/events` to the end of your URL.
 - set **Secret Token** to a random key (https://www.random.org/strings/). You'll need to pass this value to the `--gitlab-webhook-secret` flag when you start Atlantis
+  - **NOTE** If you're adding a webhook to multiple repositories, each repository will need to use the **same** secret.
 - check the boxes
     - **Push events**
     - **Comments**
@@ -92,6 +93,7 @@ If you're using GitLab, navigate to your project's home page in GitLab
 - set **URL** to `http://$URL/events` (or `https://$URL/events` if you're using SSL) where `$URL` is where Atlantis is hosted. **Be sure to add `/events`**
 - Double-check you added `/events` to the end of your URL.
 - Set **Secret** to a random key (https://www.random.org/strings/). You'll need to pass this value to the `--bitbucket-webhook-secret` flag when you start Atlantis
+  - **NOTE** If you're adding a webhook to multiple repositories, each repository will need to use the **same** secret.
 - Under **Repository** select **Push**
 - Under **Pull Request**, select: Opened, Modified, Merged, Declined, Deleted and Comment added
 - Click **Save**<img src="../guide/images/bitbucket-server-webhook.png" alt="Bitbucket Webhook" style="max-height: 500px;">
@@ -526,6 +528,13 @@ to GitHub/GitLab and your internal users.
 If you want to add SSL you can use something like [https://github.com/jetstack/cert-manager](https://github.com/jetstack/cert-manager) to generate SSL
 certs and mount them into the Pod. Then set the `ATLANTIS_SSL_CERT_FILE` and `ATLANTIS_SSL_KEY_FILE` environment variables to enable SSL.
 You could also set up SSL at your LoadBalancer.
+
+### OpenShift
+The Atlantis Docker image is compatible with OpenShift, however you need to run
+with an additional flag: `--data-dir=/home/atlantis`. This is required because
+OpenShift runs Docker images with random user id's that use `/` as their home directory.
+Since Atlantis defaults to using the home directory as its data dir and `/` doesn't have the correct permissions,
+you need to set `--data-dir` or the environment variable `ATLANTIS_DATA_DIR` to `/home/atlantis`.
 
 ## AWS Fargate
 

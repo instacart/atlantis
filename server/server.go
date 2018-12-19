@@ -10,7 +10,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // Modified hereafter by contributors to runatlantis/atlantis.
-//
+
 // Package server handles the web server and executing commands that come in
 // via webhooks.
 package server
@@ -31,7 +31,6 @@ import (
 
 	"github.com/elazarl/go-bindata-assetfs"
 	"github.com/gorilla/mux"
-	"github.com/lkysow/go-gitlab"
 	"github.com/pkg/errors"
 	"github.com/runatlantis/atlantis/server/events"
 	"github.com/runatlantis/atlantis/server/events/locking"
@@ -64,6 +63,7 @@ const (
 // Server runs the Atlantis web server.
 type Server struct {
 	AtlantisVersion    string
+	AtlantisURL        *url.URL
 	Router             *mux.Router
 	Port               int
 	CommandRunner      *events.DefaultCommandRunner
@@ -102,17 +102,22 @@ type UserConfig struct {
 	RepoWhitelist          string `mapstructure:"repo-whitelist"`
 	// RequireApproval is whether to require pull request approval before
 	// allowing terraform apply's to be run.
-	RequireApproval bool            `mapstructure:"require-approval"`
-	SlackToken      string          `mapstructure:"slack-token"`
-	SSLCertFile     string          `mapstructure:"ssl-cert-file"`
-	SSLKeyFile      string          `mapstructure:"ssl-key-file"`
-	Webhooks        []WebhookConfig `mapstructure:"webhooks"`
+	RequireApproval bool `mapstructure:"require-approval"`
+	// RequireMergeable is whether to require pull requests to be mergeable before
+	// allowing terraform apply's to run.
+	RequireMergeable       bool            `mapstructure:"require-mergeable"`
+	SilenceWhitelistErrors bool            `mapstructure:"silence-whitelist-errors"`
+	SlackToken             string          `mapstructure:"slack-token"`
+	SSLCertFile            string          `mapstructure:"ssl-cert-file"`
+	SSLKeyFile             string          `mapstructure:"ssl-key-file"`
+	Webhooks               []WebhookConfig `mapstructure:"webhooks"`
 }
 
 // Config holds config for server that isn't passed in by the user.
 type Config struct {
 	AllowForkPRsFlag    string
 	AllowRepoConfigFlag string
+	AtlantisURLFlag     string
 	AtlantisVersion     string
 }
 
@@ -135,6 +140,7 @@ type WebhookConfig struct {
 // its dependencies an error will be returned. This is like the main() function
 // for the server CLI command because it injects all the dependencies.
 func NewServer(userConfig UserConfig, config Config) (*Server, error) {
+	logger := logging.NewSimpleLogger("server", nil, false, logging.ToLogLevel(userConfig.LogLevel))
 	var supportedVCSHosts []models.VCSHostType
 	var githubClient *vcs.GithubClient
 	var gitlabClient *vcs.GitlabClient
@@ -150,23 +156,10 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 	}
 	if userConfig.GitlabUser != "" {
 		supportedVCSHosts = append(supportedVCSHosts, models.Gitlab)
-		gitlabClient = &vcs.GitlabClient{
-			Client: gitlab.NewClient(nil, userConfig.GitlabToken),
-		}
-		// If not using gitlab.com we need to set the URL to the API.
-		if userConfig.GitlabHostname != "gitlab.com" {
-			// Check if they've also provided a scheme so we don't prepend it
-			// again.
-			scheme := "https"
-			schemeSplit := strings.Split(userConfig.GitlabHostname, "://")
-			if len(schemeSplit) > 1 {
-				scheme = schemeSplit[0]
-				userConfig.GitlabHostname = schemeSplit[1]
-			}
-			apiURL := fmt.Sprintf("%s://%s/api/v4/", scheme, userConfig.GitlabHostname)
-			if err := gitlabClient.Client.SetBaseURL(apiURL); err != nil {
-				return nil, errors.Wrapf(err, "setting GitLab API URL: %s", apiURL)
-			}
+		var err error
+		gitlabClient, err = vcs.NewGitlabClient(userConfig.GitlabHostname, userConfig.GitlabToken, logger)
+		if err != nil {
+			return nil, err
 		}
 	}
 	if userConfig.BitbucketUser != "" {
@@ -215,7 +208,9 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 	if err != nil && flag.Lookup("test.v") == nil {
 		return nil, errors.Wrap(err, "initializing terraform")
 	}
-	markdownRenderer := &events.MarkdownRenderer{}
+	markdownRenderer := &events.MarkdownRenderer{
+		GitlabSupportsCommonMark: gitlabClient.SupportsCommonMark(),
+	}
 	boltdb, err := boltdb.New(userConfig.DataDir)
 	if err != nil {
 		return nil, err
@@ -228,9 +223,14 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 	projectLocker := &events.DefaultProjectLocker{
 		Locker: lockingClient,
 	}
+	parsedURL, err := ParseAtlantisURL(userConfig.AtlantisURL)
+	if err != nil {
+		return nil, errors.Wrapf(err,
+			"parsing --%s flag %q", config.AtlantisURLFlag, userConfig.AtlantisURL)
+	}
 	underlyingRouter := mux.NewRouter()
 	router := &Router{
-		AtlantisURL:               userConfig.AtlantisURL,
+		AtlantisURL:               parsedURL,
 		LockViewRouteIDQueryParam: LockViewRouteIDQueryParam,
 		LockViewRouteName:         LockViewRouteName,
 		Underlying:                underlyingRouter,
@@ -240,7 +240,6 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		Locker:     lockingClient,
 		WorkingDir: workingDir,
 	}
-	logger := logging.NewSimpleLogger("server", nil, false, logging.ToLogLevel(userConfig.LogLevel))
 	eventParser := &events.EventParser{
 		GithubUser:         userConfig.GithubUser,
 		GithubToken:        userConfig.GithubToken,
@@ -295,11 +294,13 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 			RunStepRunner: &runtime.RunStepRunner{
 				DefaultTFVersion: defaultTfVersion,
 			},
-			PullApprovedChecker:     vcsClient,
-			WorkingDir:              workingDir,
-			Webhooks:                webhooksManager,
-			WorkingDirLocker:        workingDirLocker,
-			RequireApprovalOverride: userConfig.RequireApproval,
+			PullApprovedChecker:      vcsClient,
+			PullMergeableChecker:     vcsClient,
+			WorkingDir:               workingDir,
+			Webhooks:                 webhooksManager,
+			WorkingDirLocker:         workingDirLocker,
+			RequireApprovalOverride:  userConfig.RequireApproval,
+			RequireMergeableOverride: userConfig.RequireMergeable,
 		},
 	}
 	repoWhitelist, err := events.NewRepoWhitelistChecker(userConfig.RepoWhitelist)
@@ -308,6 +309,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 	}
 	locksController := &LocksController{
 		AtlantisVersion:    config.AtlantisVersion,
+		AtlantisURL:        parsedURL,
 		Locker:             lockingClient,
 		Logger:             logger,
 		VCSClient:          vcsClient,
@@ -326,12 +328,14 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		GitlabRequestParserValidator: &DefaultGitlabRequestParserValidator{},
 		GitlabWebhookSecret:          []byte(userConfig.GitlabWebhookSecret),
 		RepoWhitelistChecker:         repoWhitelist,
+		SilenceWhitelistErrors:       userConfig.SilenceWhitelistErrors,
 		SupportedVCSHosts:            supportedVCSHosts,
 		VCSClient:                    vcsClient,
 		BitbucketWebhookSecret:       []byte(userConfig.BitbucketWebhookSecret),
 	}
 	return &Server{
 		AtlantisVersion:    config.AtlantisVersion,
+		AtlantisURL:        parsedURL,
 		Router:             underlyingRouter,
 		Port:               userConfig.Port,
 		CommandRunner:      commandRunner,
@@ -372,7 +376,7 @@ func (s *Server) Start() error {
 
 	server := &http.Server{Addr: fmt.Sprintf(":%d", s.Port), Handler: n}
 	go func() {
-		s.Logger.Warn("Atlantis started - listening on port %v", s.Port)
+		s.Logger.Info("Atlantis started - listening on port %v", s.Port)
 
 		var err error
 		if s.SSLCertFile != "" && s.SSLKeyFile != "" {
@@ -409,17 +413,22 @@ func (s *Server) Index(w http.ResponseWriter, _ *http.Request) {
 	for id, v := range locks {
 		lockURL, _ := s.Router.Get(LockViewRouteName).URL("id", url.QueryEscape(id))
 		lockResults = append(lockResults, LockIndexData{
-			LockURL:      lockURL.String(),
+			// NOTE: must use .String() instead of .Path because we need the
+			// query params as part of the lock URL.
+			LockPath:     lockURL.String(),
 			RepoFullName: v.Project.RepoFullName,
 			PullNum:      v.Pull.Num,
 			Time:         v.Time,
 		})
 	}
-	// nolint: errcheck
-	s.IndexTemplate.Execute(w, IndexData{
+	err = s.IndexTemplate.Execute(w, IndexData{
 		Locks:           lockResults,
 		AtlantisVersion: s.AtlantisVersion,
+		CleanedBasePath: s.AtlantisURL.Path,
 	})
+	if err != nil {
+		s.Logger.Err(err.Error())
+	}
 }
 
 // Healthz returns the health check response. It always returns a 200 currently.
@@ -436,4 +445,22 @@ func (s *Server) Healthz(w http.ResponseWriter, _ *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(data) // nolint: errcheck
+}
+
+// ParseAtlantisURL parses the user-passed atlantis URL to ensure it is valid
+// and we can use it in our templates.
+// It removes any trailing slashes from the path so we can concatenate it
+// with other paths without checking.
+func ParseAtlantisURL(u string) (*url.URL, error) {
+	parsed, err := url.Parse(u)
+	if err != nil {
+		return nil, err
+	}
+	if !(parsed.Scheme == "http" || parsed.Scheme == "https") {
+		return nil, errors.New("http or https must be specified")
+	}
+	// We want the path to end without a trailing slash so we know how to
+	// use it in the rest of the program.
+	parsed.Path = strings.TrimSuffix(parsed.Path, "/")
+	return parsed, nil
 }

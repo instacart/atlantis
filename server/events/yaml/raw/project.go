@@ -2,6 +2,7 @@ package raw
 
 import (
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"strings"
 
@@ -12,8 +13,9 @@ import (
 )
 
 const (
-	DefaultWorkspace         = "default"
-	ApprovedApplyRequirement = "approved"
+	DefaultWorkspace          = "default"
+	ApprovedApplyRequirement  = "approved"
+	MergeableApplyRequirement = "mergeable"
 )
 
 type Project struct {
@@ -36,8 +38,8 @@ func (p Project) Validate() error {
 	validApplyReq := func(value interface{}) error {
 		reqs := value.([]string)
 		for _, r := range reqs {
-			if r != ApprovedApplyRequirement {
-				return fmt.Errorf("%q not supported, only %s is supported", r, ApprovedApplyRequirement)
+			if r != ApprovedApplyRequirement && r != MergeableApplyRequirement {
+				return fmt.Errorf("%q not supported, only %s and %s are supported", r, ApprovedApplyRequirement, MergeableApplyRequirement)
 			}
 		}
 		return nil
@@ -57,6 +59,9 @@ func (p Project) Validate() error {
 		}
 		if *strPtr == "" {
 			return errors.New("if set cannot be empty")
+		}
+		if !validProjectName(*strPtr) {
+			return fmt.Errorf("%q is not allowed: must contain only URL safe characters", *strPtr)
 		}
 		return nil
 	}
@@ -98,4 +103,13 @@ func (p Project) ToValid() valid.Project {
 	v.Name = p.Name
 
 	return v
+}
+
+// validProjectName returns true if the project name is valid.
+// Since the name might be used in URLs and definitely in files we don't
+// support any characters that must be url escaped *except* for '/' because
+// users like to name their projects to match the directory it's in.
+func validProjectName(name string) bool {
+	nameWithoutSlashes := strings.Replace(name, "/", "-", -1)
+	return nameWithoutSlashes == url.QueryEscape(nameWithoutSlashes)
 }

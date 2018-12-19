@@ -10,7 +10,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // Modified hereafter by contributors to runatlantis/atlantis.
-//
+
 package server_test
 
 import (
@@ -23,7 +23,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/lkysow/go-gitlab"
 	. "github.com/petergtz/pegomock"
@@ -118,6 +117,18 @@ func TestPost_UnsupportedGitlabEvent(t *testing.T) {
 	responseContains(t, w, http.StatusOK, "Ignoring unsupported event")
 }
 
+// Test that if the comment comes from a commit rather than a merge request,
+// we give an error and ignore it.
+func TestPost_GitlabCommentOnCommit(t *testing.T) {
+	e, _, gl, _, _, _, _, _ := setup(t)
+	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
+	w := httptest.NewRecorder()
+	req.Header.Set(gitlabHeader, "value")
+	When(gl.ParseAndValidate(req, secret)).ThenReturn(gitlab.CommitCommentEvent{}, nil)
+	e.Post(w, req)
+	responseContains(t, w, http.StatusOK, "Ignoring comment on commit event")
+}
+
 func TestPost_GithubCommentNotCreated(t *testing.T) {
 	t.Log("when the event is a github comment but it's not a created event we ignore it")
 	e, v, _, _, _, _, _, _ := setup(t)
@@ -178,10 +189,10 @@ func TestPost_GitlabCommentNotWhitelisted(t *testing.T) {
 		Logger:                       logging.NewNoopLogger(),
 		CommentParser:                &events.CommentParser{},
 		GitlabRequestParserValidator: &server.DefaultGitlabRequestParserValidator{},
-		Parser:               &events.EventParser{},
-		SupportedVCSHosts:    []models.VCSHostType{models.Gitlab},
-		RepoWhitelistChecker: &events.RepoWhitelistChecker{},
-		VCSClient:            vcsClient,
+		Parser:                       &events.EventParser{},
+		SupportedVCSHosts:            []models.VCSHostType{models.Gitlab},
+		RepoWhitelistChecker:         &events.RepoWhitelistChecker{},
+		VCSClient:                    vcsClient,
 	}
 	requestJSON, err := ioutil.ReadFile(filepath.Join("testfixtures", "gitlabMergeCommentEvent_notWhitelisted.json"))
 	Ok(t, err)
@@ -196,6 +207,35 @@ func TestPost_GitlabCommentNotWhitelisted(t *testing.T) {
 	Assert(t, strings.Contains(string(body), exp), "exp %q to be contained in %q", exp, string(body))
 	expRepo, _ := models.NewRepo(models.Gitlab, "gitlabhq/gitlab-test", "https://example.com/gitlabhq/gitlab-test.git", "", "")
 	vcsClient.VerifyWasCalledOnce().CreateComment(expRepo, 1, "```\nError: This repo is not whitelisted for Atlantis.\n```")
+}
+
+func TestPost_GitlabCommentNotWhitelistedWithSilenceErrors(t *testing.T) {
+	t.Log("when the event is a gitlab comment from a repo that isn't whitelisted and we are silencing errors, do not comment with an error")
+	RegisterMockTestingT(t)
+	vcsClient := vcsmocks.NewMockClientProxy()
+	e := server.EventsController{
+		Logger:                       logging.NewNoopLogger(),
+		CommentParser:                &events.CommentParser{},
+		GitlabRequestParserValidator: &server.DefaultGitlabRequestParserValidator{},
+		Parser:                       &events.EventParser{},
+		SupportedVCSHosts:            []models.VCSHostType{models.Gitlab},
+		RepoWhitelistChecker:         &events.RepoWhitelistChecker{},
+		VCSClient:                    vcsClient,
+		SilenceWhitelistErrors:       true,
+	}
+	requestJSON, err := ioutil.ReadFile(filepath.Join("testfixtures", "gitlabMergeCommentEvent_notWhitelisted.json"))
+	Ok(t, err)
+	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(requestJSON))
+	req.Header.Set(gitlabHeader, "Note Hook")
+	w := httptest.NewRecorder()
+	e.Post(w, req)
+
+	Equals(t, http.StatusForbidden, w.Result().StatusCode)
+	body, _ := ioutil.ReadAll(w.Result().Body)
+	exp := "Repo not whitelisted"
+	Assert(t, strings.Contains(string(body), exp), "exp %q to be contained in %q", exp, string(body))
+	vcsClient.VerifyWasCalled(Never()).CreateComment(matchers.AnyModelsRepo(), AnyInt(), AnyString())
+
 }
 
 func TestPost_GithubCommentNotWhitelisted(t *testing.T) {
@@ -225,6 +265,35 @@ func TestPost_GithubCommentNotWhitelisted(t *testing.T) {
 	Assert(t, strings.Contains(string(body), exp), "exp %q to be contained in %q", exp, string(body))
 	expRepo, _ := models.NewRepo(models.Github, "baxterthehacker/public-repo", "https://github.com/baxterthehacker/public-repo.git", "", "")
 	vcsClient.VerifyWasCalledOnce().CreateComment(expRepo, 2, "```\nError: This repo is not whitelisted for Atlantis.\n```")
+}
+
+func TestPost_GithubCommentNotWhitelistedWithSilenceErrors(t *testing.T) {
+	t.Log("when the event is a github comment from a repo that isn't whitelisted and we are silencing errors, do not comment with an error")
+	RegisterMockTestingT(t)
+	vcsClient := vcsmocks.NewMockClientProxy()
+	e := server.EventsController{
+		Logger:                 logging.NewNoopLogger(),
+		GithubRequestValidator: &server.DefaultGithubRequestValidator{},
+		CommentParser:          &events.CommentParser{},
+		Parser:                 &events.EventParser{},
+		SupportedVCSHosts:      []models.VCSHostType{models.Github},
+		RepoWhitelistChecker:   &events.RepoWhitelistChecker{},
+		VCSClient:              vcsClient,
+		SilenceWhitelistErrors: true,
+	}
+	requestJSON, err := ioutil.ReadFile(filepath.Join("testfixtures", "githubIssueCommentEvent_notWhitelisted.json"))
+	Ok(t, err)
+	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(requestJSON))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(githubHeader, "issue_comment")
+	w := httptest.NewRecorder()
+	e.Post(w, req)
+
+	Equals(t, http.StatusForbidden, w.Result().StatusCode)
+	body, _ := ioutil.ReadAll(w.Result().Body)
+	exp := "Repo not whitelisted"
+	Assert(t, strings.Contains(string(body), exp), "exp %q to be contained in %q", exp, string(body))
+	vcsClient.VerifyWasCalled(Never()).CreateComment(matchers.AnyModelsRepo(), AnyInt(), AnyString())
 }
 
 func TestPost_GitlabCommentResponse(t *testing.T) {
@@ -309,10 +378,10 @@ func TestPost_GitlabMergeRequestInvalid(t *testing.T) {
 	e, _, gl, p, _, _, _, _ := setup(t)
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(gitlabHeader, "value")
-	When(gl.ParseAndValidate(req, secret)).ThenReturn(gitlabMergeEvent, nil)
+	When(gl.ParseAndValidate(req, secret)).ThenReturn(gitlab.MergeEvent{}, nil)
 	repo := models.Repo{}
 	pullRequest := models.PullRequest{State: models.ClosedPullState}
-	When(p.ParseGitlabMergeEvent(gitlabMergeEvent)).ThenReturn(pullRequest, models.OpenedPullEvent, repo, repo, models.User{}, errors.New("err"))
+	When(p.ParseGitlabMergeRequestEvent(gitlab.MergeEvent{})).ThenReturn(pullRequest, models.OpenedPullEvent, repo, repo, models.User{}, errors.New("err"))
 	w := httptest.NewRecorder()
 	e.Post(w, req)
 	responseContains(t, w, http.StatusBadRequest, "Error parsing webhook: err")
@@ -343,10 +412,10 @@ func TestPost_GitlabMergeRequestNotWhitelisted(t *testing.T) {
 	var err error
 	e.RepoWhitelistChecker, err = events.NewRepoWhitelistChecker("github.com/nevermatch")
 	Ok(t, err)
-	When(gl.ParseAndValidate(req, secret)).ThenReturn(gitlabMergeEvent, nil)
+	When(gl.ParseAndValidate(req, secret)).ThenReturn(gitlab.MergeEvent{}, nil)
 	repo := models.Repo{}
 	pullRequest := models.PullRequest{State: models.ClosedPullState}
-	When(p.ParseGitlabMergeEvent(gitlabMergeEvent)).ThenReturn(pullRequest, models.OpenedPullEvent, repo, repo, models.User{}, nil)
+	When(p.ParseGitlabMergeRequestEvent(gitlab.MergeEvent{})).ThenReturn(pullRequest, models.OpenedPullEvent, repo, repo, models.User{}, nil)
 
 	w := httptest.NewRecorder()
 	e.Post(w, req)
@@ -373,11 +442,12 @@ func TestPost_GitlabMergeRequestUnsupportedAction(t *testing.T) {
 	e, _, gl, p, _, _, _, _ := setup(t)
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(gitlabHeader, "value")
-	gitlabMergeEvent.ObjectAttributes.Action = "unsupported"
-	When(gl.ParseAndValidate(req, secret)).ThenReturn(gitlabMergeEvent, nil)
+	var event gitlab.MergeEvent
+	event.ObjectAttributes.Action = "unsupported"
+	When(gl.ParseAndValidate(req, secret)).ThenReturn(event, nil)
 	repo := models.Repo{}
 	pullRequest := models.PullRequest{State: models.ClosedPullState}
-	When(p.ParseGitlabMergeEvent(gitlabMergeEvent)).ThenReturn(pullRequest, repo, repo, models.User{}, nil)
+	When(p.ParseGitlabMergeRequestEvent(event)).ThenReturn(pullRequest, repo, repo, models.User{}, nil)
 
 	w := httptest.NewRecorder()
 	e.Post(w, req)
@@ -409,11 +479,12 @@ func TestPost_GitlabMergeRequestClosedErrCleaningPull(t *testing.T) {
 	e, _, gl, p, _, c, _, _ := setup(t)
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(gitlabHeader, "value")
-	gitlabMergeEvent.ObjectAttributes.Action = "close"
-	When(gl.ParseAndValidate(req, secret)).ThenReturn(gitlabMergeEvent, nil)
+	var event gitlab.MergeEvent
+	event.ObjectAttributes.Action = "close"
+	When(gl.ParseAndValidate(req, secret)).ThenReturn(event, nil)
 	repo := models.Repo{}
 	pullRequest := models.PullRequest{State: models.ClosedPullState}
-	When(p.ParseGitlabMergeEvent(gitlabMergeEvent)).ThenReturn(pullRequest, models.OpenedPullEvent, repo, repo, models.User{}, nil)
+	When(p.ParseGitlabMergeRequestEvent(event)).ThenReturn(pullRequest, models.OpenedPullEvent, repo, repo, models.User{}, nil)
 	When(c.CleanUpPull(repo, pullRequest)).ThenReturn(errors.New("err"))
 	w := httptest.NewRecorder()
 	e.Post(w, req)
@@ -444,10 +515,10 @@ func TestPost_GitlabMergeRequestSuccess(t *testing.T) {
 	e, _, gl, p, _, _, _, _ := setup(t)
 	req, _ := http.NewRequest("GET", "", bytes.NewBuffer(nil))
 	req.Header.Set(gitlabHeader, "value")
-	When(gl.ParseAndValidate(req, secret)).ThenReturn(gitlabMergeEvent, nil)
+	When(gl.ParseAndValidate(req, secret)).ThenReturn(gitlab.MergeEvent{}, nil)
 	repo := models.Repo{}
 	pullRequest := models.PullRequest{State: models.ClosedPullState}
-	When(p.ParseGitlabMergeEvent(gitlabMergeEvent)).ThenReturn(pullRequest, models.OpenedPullEvent, repo, repo, models.User{}, nil)
+	When(p.ParseGitlabMergeRequestEvent(gitlab.MergeEvent{})).ThenReturn(pullRequest, models.OpenedPullEvent, repo, repo, models.User{}, nil)
 	w := httptest.NewRecorder()
 	e.Post(w, req)
 	responseContains(t, w, http.StatusOK, "Pull request cleaned successfully")
@@ -488,11 +559,12 @@ func TestPost_PullOpenedOrUpdated(t *testing.T) {
 			switch c.HostType {
 			case models.Gitlab:
 				req.Header.Set(gitlabHeader, "value")
-				gitlabMergeEvent.ObjectAttributes.Action = c.Action
-				When(gl.ParseAndValidate(req, secret)).ThenReturn(gitlabMergeEvent, nil)
+				var event gitlab.MergeEvent
+				event.ObjectAttributes.Action = c.Action
+				When(gl.ParseAndValidate(req, secret)).ThenReturn(event, nil)
 				repo := models.Repo{}
 				pullRequest := models.PullRequest{State: models.ClosedPullState}
-				When(p.ParseGitlabMergeEvent(gitlabMergeEvent)).ThenReturn(pullRequest, models.OpenedPullEvent, repo, repo, models.User{}, nil)
+				When(p.ParseGitlabMergeRequestEvent(event)).ThenReturn(pullRequest, models.OpenedPullEvent, repo, repo, models.User{}, nil)
 			case models.Github:
 				req.Header.Set(githubHeader, "pull_request")
 				event := fmt.Sprintf(`{"action": "%s"}`, c.Action)
@@ -536,61 +608,4 @@ func setup(t *testing.T) (server.EventsController, *mocks.MockGithubRequestValid
 		VCSClient:                    vcsmock,
 	}
 	return e, v, gl, p, cr, c, vcsmock, cp
-}
-
-var gitlabMergeEvent = gitlab.MergeEvent{
-	ObjectAttributes: struct {
-		ID              int              `json:"id"`
-		TargetBranch    string           `json:"target_branch"`
-		SourceBranch    string           `json:"source_branch"`
-		SourceProjectID int              `json:"source_project_id"`
-		AuthorID        int              `json:"author_id"`
-		AssigneeID      int              `json:"assignee_id"`
-		Title           string           `json:"title"`
-		CreatedAt       string           `json:"created_at"`
-		UpdatedAt       string           `json:"updated_at"`
-		StCommits       []*gitlab.Commit `json:"st_commits"`
-		StDiffs         []*gitlab.Diff   `json:"st_diffs"`
-		MilestoneID     int              `json:"milestone_id"`
-		State           string           `json:"state"`
-		MergeStatus     string           `json:"merge_status"`
-		TargetProjectID int              `json:"target_project_id"`
-		IID             int              `json:"iid"`
-		Description     string           `json:"description"`
-		Position        int              `json:"position"`
-		LockedAt        string           `json:"locked_at"`
-		UpdatedByID     int              `json:"updated_by_id"`
-		MergeError      string           `json:"merge_error"`
-		MergeParams     struct {
-			ForceRemoveSourceBranch string `json:"force_remove_source_branch"`
-		} `json:"merge_params"`
-		MergeWhenBuildSucceeds   bool               `json:"merge_when_build_succeeds"`
-		MergeUserID              int                `json:"merge_user_id"`
-		MergeCommitSha           string             `json:"merge_commit_sha"`
-		DeletedAt                string             `json:"deleted_at"`
-		ApprovalsBeforeMerge     string             `json:"approvals_before_merge"`
-		RebaseCommitSha          string             `json:"rebase_commit_sha"`
-		InProgressMergeCommitSha string             `json:"in_progress_merge_commit_sha"`
-		LockVersion              int                `json:"lock_version"`
-		TimeEstimate             int                `json:"time_estimate"`
-		Source                   *gitlab.Repository `json:"source"`
-		Target                   *gitlab.Repository `json:"target"`
-		LastCommit               struct {
-			ID        string         `json:"id"`
-			Message   string         `json:"message"`
-			Timestamp *time.Time     `json:"timestamp"`
-			URL       string         `json:"url"`
-			Author    *gitlab.Author `json:"author"`
-		} `json:"last_commit"`
-		WorkInProgress bool   `json:"work_in_progress"`
-		URL            string `json:"url"`
-		Action         string `json:"action"`
-		Assignee       struct {
-			Name      string `json:"name"`
-			Username  string `json:"username"`
-			AvatarURL string `json:"avatar_url"`
-		} `json:"assignee"`
-	}{
-		Action: "merge",
-	},
 }

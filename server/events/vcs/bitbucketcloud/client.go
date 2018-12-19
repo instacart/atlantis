@@ -86,11 +86,16 @@ func (b *Client) GetModifiedFiles(repo models.Repo, pull models.PullRequest) ([]
 
 // CreateComment creates a comment on the merge request.
 func (b *Client) CreateComment(repo models.Repo, pullNum int, comment string) error {
-	bodyBytes, err := json.Marshal(map[string]string{"content": comment})
+	// NOTE: I tried to find the maximum size of a comment for bitbucket.org but
+	// I got up to 200k chars without issue so for now I'm not going to bother
+	// to detect this.
+	bodyBytes, err := json.Marshal(map[string]map[string]string{"content": {
+		"raw": comment,
+	}})
 	if err != nil {
 		return errors.Wrap(err, "json encoding")
 	}
-	path := fmt.Sprintf("%s/1.0/repositories/%s/pullrequests/%d/comments", b.BaseURL, repo.FullName, pullNum)
+	path := fmt.Sprintf("%s/2.0/repositories/%s/pullrequests/%d/comments", b.BaseURL, repo.FullName, pullNum)
 	_, err = b.makeRequest("POST", path, bytes.NewBuffer(bodyBytes))
 	return err
 }
@@ -115,6 +120,27 @@ func (b *Client) PullIsApproved(repo models.Repo, pull models.PullRequest) (bool
 		if *participant.Approved && *participant.User.Username != pull.Author {
 			return true, nil
 		}
+	}
+	return false, nil
+}
+
+// PullIsMergeable returns true if the merge request has no conflicts and can be merged.
+func (b *Client) PullIsMergeable(repo models.Repo, pull models.PullRequest) (bool, error) {
+	// NOTE: The 1.0 API is deprecated, but the 2.0 API does not provide this endpoint.
+	path := fmt.Sprintf("%s/1.0/repositories/%s/pullrequests/%d/conflict-status", b.BaseURL, repo.FullName, pull.Num)
+	resp, err := b.makeRequest("GET", path, nil)
+	if err != nil {
+		return false, err
+	}
+	var conflictStatus ConflictStatus
+	if err := json.Unmarshal(resp, &conflictStatus); err != nil {
+		return false, errors.Wrapf(err, "Could not parse response %q", string(resp))
+	}
+	if err := validator.New().Struct(conflictStatus); err != nil {
+		return false, errors.Wrapf(err, "API response %q was missing fields", string(resp))
+	}
+	if !*conflictStatus.MergeImpossible && !*conflictStatus.IsConflicted {
+		return true, nil
 	}
 	return false, nil
 }

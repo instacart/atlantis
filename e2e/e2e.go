@@ -10,7 +10,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // Modified hereafter by contributors to runatlantis/atlantis.
-//
+
 package main
 
 import (
@@ -29,7 +29,7 @@ type E2ETester struct {
 	repoURL      string
 	ownerName    string
 	repoName     string
-	hookID       int
+	hookID       int64
 	cloneDirRoot string
 	projectType  Project
 }

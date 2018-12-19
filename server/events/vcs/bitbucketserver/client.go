@@ -11,10 +11,16 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/runatlantis/atlantis/server/events/vcs/common"
+
 	"github.com/pkg/errors"
 	"github.com/runatlantis/atlantis/server/events/models"
 	"gopkg.in/go-playground/validator.v9"
 )
+
+// maxCommentLength is the maximum number of chars allowed by Bitbucket in a
+// single comment.
+const maxCommentLength = 32768
 
 type Client struct {
 	HttpClient  *http.Client
@@ -63,13 +69,13 @@ func (b *Client) GetModifiedFiles(repo models.Repo, pull models.PullRequest) ([]
 	if err != nil {
 		return nil, err
 	}
-	nextPageStart := "0"
+	nextPageStart := 0
 	baseURL := fmt.Sprintf("%s/rest/api/1.0/projects/%s/repos/%s/pull-requests/%d/changes",
 		b.BaseURL, projectKey, repo.Name, pull.Num)
 	// We'll only loop 1000 times as a safety measure.
 	maxLoops := 1000
 	for i := 0; i < maxLoops; i++ {
-		resp, err := b.makeRequest("GET", fmt.Sprintf("%s?start=%s", baseURL, nextPageStart), nil)
+		resp, err := b.makeRequest("GET", fmt.Sprintf("%s?start=%d", baseURL, nextPageStart), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -117,8 +123,22 @@ func (b *Client) GetProjectKey(repoName string, cloneURL string) (string, error)
 	return matches[1], nil
 }
 
-// CreateComment creates a comment on the merge request.
+// CreateComment creates a comment on the merge request. It will write multiple
+// comments if a single comment is too long.
 func (b *Client) CreateComment(repo models.Repo, pullNum int, comment string) error {
+	sepEnd := "\n```\n**Warning**: Output length greater than max comment size. Continued in next comment."
+	sepStart := "Continued from previous comment.\n```diff\n"
+	comments := common.SplitComment(comment, maxCommentLength, sepEnd, sepStart)
+	for _, c := range comments {
+		if err := b.postComment(repo, pullNum, c); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// postComment actually posts the comment. It's a helper for CreateComment().
+func (b *Client) postComment(repo models.Repo, pullNum int, comment string) error {
 	bodyBytes, err := json.Marshal(map[string]string{"text": comment})
 	if err != nil {
 		return errors.Wrap(err, "json encoding")
@@ -154,6 +174,30 @@ func (b *Client) PullIsApproved(repo models.Repo, pull models.PullRequest) (bool
 		if *reviewer.Approved {
 			return true, nil
 		}
+	}
+	return false, nil
+}
+
+// PullIsMergeable returns true if the merge request has no conflicts and can be merged.
+func (b *Client) PullIsMergeable(repo models.Repo, pull models.PullRequest) (bool, error) {
+	projectKey, err := b.GetProjectKey(repo.Name, repo.SanitizedCloneURL)
+	if err != nil {
+		return false, err
+	}
+	path := fmt.Sprintf("%s/rest/api/1.0/projects/%s/repos/%s/pull-requests/%d/merge", b.BaseURL, projectKey, repo.Name, pull.Num)
+	resp, err := b.makeRequest("GET", path, nil)
+	if err != nil {
+		return false, err
+	}
+	var mergeStatus MergeStatus
+	if err := json.Unmarshal(resp, &mergeStatus); err != nil {
+		return false, errors.Wrapf(err, "Could not parse response %q", string(resp))
+	}
+	if err := validator.New().Struct(mergeStatus); err != nil {
+		return false, errors.Wrapf(err, "API response %q was missing fields", string(resp))
+	}
+	if *mergeStatus.CanMerge && !*mergeStatus.Conflicted {
+		return true, nil
 	}
 	return false, nil
 }

@@ -47,31 +47,32 @@ won't work for multiple accounts since Atlantis wouldn't know which environment 
 Terraform with.
 
 ### Assume Role Session Names
-Atlantis injects the Terraform variable `atlantis_user` and sets it to the GitHub username of
-the user that is running the Atlantis command. This can be used to dynamically name the assume role
-session which would allow you to view the GitHub username associated with the AWS API calls
-being made during a `plan` or `apply` in CloudWatch.
+Atlantis injects 5 Terraform variables that can be used to dynamically name the assume role session name.
+Setting the `session_name` allows you to trace API calls made through Atlantis back to a specific
+user and repo via CloudWatch:
 
-To take advantage of this feature, use Terraform's [built-in support](https://www.terraform.io/docs/providers/aws/#assume-role) for assume role
-and use the `atlantis_user` terraform variable
-
-```hcl
+```bash
 provider "aws" {
   assume_role {
     role_arn     = "arn:aws:iam::ACCOUNT_ID:role/ROLE_NAME"
-    session_name = "${var.atlantis_user}"
+    session_name = "${var.atlantis_user}-${var.atlantis_repo_owner}-${var.atlantis_repo_name}-${var.atlantis_pull_num}"
   }
-}
-
-variable "atlantis_user" {
-  default = "atlantis_user"
 }
 ```
 
-If you're also using the [S3 Backend](https://www.terraform.io/docs/backends/types/s3.html)
+Atlantis runs `terraform` with the following variables:
+| `-var` Argument                           | Description                                                                                                                           |
+|-------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------|
+| `atlantis_user=lkysow`               | The VCS username of who is running the plan command.                                                                                  |
+| `atlantis_repo=runatlantis/atlantis` | The full name of the repo the pull request is in. NOTE: This variable can't be used in the AWS session name because it contains a `/`. |
+| `atlantis_repo_owner=runatlantis`    | The name of the **owner** of the repo the pull request is in.                                                                         |
+| `atlantis_repo_name=atlantis`        | The name of the repo the pull request is in.                                                                                          |
+| `atlantis_pull_num=200`              | The pull request number.                                                                                                              |
+
+If you want to use `assume_role` with Atlantis and you're also using the [S3 Backend](https://www.terraform.io/docs/backends/types/s3.html),
 make sure to add the `role_arn` option:
 
-```hcl
+```bash
 terraform {
   backend "s3" {
     bucket   = "mybucket"
@@ -84,9 +85,3 @@ terraform {
   }
 }
 ```
-
-Terraform doesn't support interpolations in backend config so you will not be
-able to use `session_name = "${var.atlantis_user}"`. However, the backend assumed
-role is only used for state-related API actions. Any other API actions will be performed using
-the assumed role specified in the `aws` provider and will have the session named as the GitHub user.
-

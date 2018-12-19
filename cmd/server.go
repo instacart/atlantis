@@ -10,7 +10,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // Modified hereafter by contributors to runatlantis/atlantis.
-//
+
 package cmd
 
 import (
@@ -55,6 +55,8 @@ const (
 	PortFlag                   = "port"
 	RepoWhitelistFlag          = "repo-whitelist"
 	RequireApprovalFlag        = "require-approval"
+	RequireMergeableFlag       = "require-mergeable"
+	SilenceWhitelistErrorsFlag = "silence-whitelist-errors"
 	SSLCertFileFlag            = "ssl-cert-file"
 	SSLKeyFileFlag             = "ssl-key-file"
 
@@ -67,13 +69,13 @@ const (
 	DefaultPort             = 4141
 )
 
-const RedTermStart = "\033[31m"
-const RedTermEnd = "\033[39m"
+const redTermStart = "\033[31m"
+const redTermEnd = "\033[39m"
 
 var stringFlags = []stringFlag{
 	{
 		name:        AtlantisURLFlag,
-		description: "URL that Atlantis can be reached at. Defaults to http://$(hostname):$port where $port is from --" + PortFlag + ".",
+		description: "URL that Atlantis can be reached at. Defaults to http://$(hostname):$port where $port is from --" + PortFlag + ". Supports a base path ex. https://example.com/basepath.",
 	},
 	{
 		name:        BitbucketUserFlag,
@@ -185,6 +187,16 @@ var boolFlags = []boolFlag{
 		description:  "Require pull requests to be \"Approved\" before allowing the apply command to be run.",
 		defaultValue: false,
 	},
+	{
+		name:         RequireMergeableFlag,
+		description:  "Require pull requests to be mergeable before allowing the apply command to be run.",
+		defaultValue: false,
+	},
+	{
+		name:         SilenceWhitelistErrorsFlag,
+		description:  "Silences the posting of whitelist error comments.",
+		defaultValue: false,
+	},
 }
 var intFlags = []intFlag{
 	{
@@ -248,7 +260,7 @@ func (s *ServerCmd) Init() *cobra.Command {
 		Short:         "Start the atlantis server",
 		Long:          `Start the atlantis server and listen for webhook calls.`,
 		SilenceErrors: true,
-		SilenceUsage:  s.SilenceOutput,
+		SilenceUsage:  true,
 		PreRunE: s.withErrPrint(func(cmd *cobra.Command, args []string) error {
 			return s.preRun()
 		}),
@@ -338,6 +350,7 @@ func (s *ServerCmd) run() error {
 	server, err := s.ServerCreator.NewServer(userConfig, server.Config{
 		AllowForkPRsFlag:    AllowForkPRsFlag,
 		AllowRepoConfigFlag: AllowRepoConfigFlag,
+		AtlantisURLFlag:     AtlantisURLFlag,
 		AtlantisVersion:     s.AtlantisVersion,
 	})
 	if err != nil {
@@ -458,16 +471,16 @@ func (s *ServerCmd) trimAtSymbolFromUsers(userConfig *server.UserConfig) {
 
 func (s *ServerCmd) securityWarnings(userConfig *server.UserConfig) {
 	if userConfig.GithubUser != "" && userConfig.GithubWebhookSecret == "" && !s.SilenceOutput {
-		fmt.Fprintf(os.Stderr, "%s[WARN] No GitHub webhook secret set. This could allow attackers to spoof requests from GitHub.%s\n", RedTermStart, RedTermEnd)
+		fmt.Fprintf(os.Stderr, "%s[WARN] No GitHub webhook secret set. This could allow attackers to spoof requests from GitHub.%s\n", redTermStart, redTermEnd)
 	}
 	if userConfig.GitlabUser != "" && userConfig.GitlabWebhookSecret == "" && !s.SilenceOutput {
-		fmt.Fprintf(os.Stderr, "%s[WARN] No GitLab webhook secret set. This could allow attackers to spoof requests from GitLab.%s\n", RedTermStart, RedTermEnd)
+		fmt.Fprintf(os.Stderr, "%s[WARN] No GitLab webhook secret set. This could allow attackers to spoof requests from GitLab.%s\n", redTermStart, redTermEnd)
 	}
 	if userConfig.BitbucketUser != "" && userConfig.BitbucketBaseURL != DefaultBitbucketBaseURL && userConfig.BitbucketWebhookSecret == "" && !s.SilenceOutput {
-		fmt.Fprintf(os.Stderr, "%s[WARN] No Bitbucket webhook secret set. This could allow attackers to spoof requests from Bitbucket.%s\n", RedTermStart, RedTermEnd)
+		fmt.Fprintf(os.Stderr, "%s[WARN] No Bitbucket webhook secret set. This could allow attackers to spoof requests from Bitbucket.%s\n", redTermStart, redTermEnd)
 	}
 	if userConfig.BitbucketUser != "" && userConfig.BitbucketBaseURL == DefaultBitbucketBaseURL && !s.SilenceOutput {
-		fmt.Fprintf(os.Stderr, "%s[WARN] Bitbucket Cloud does not support webhook secrets. This could allow attackers to spoof requests from Bitbucket. Ensure you are whitelisting Bitbucket IPs.%s\n", RedTermStart, RedTermEnd)
+		fmt.Fprintf(os.Stderr, "%s[WARN] Bitbucket Cloud does not support webhook secrets. This could allow attackers to spoof requests from Bitbucket. Ensure you are whitelisting Bitbucket IPs.%s\n", redTermStart, redTermEnd)
 	}
 }
 
@@ -476,7 +489,7 @@ func (s *ServerCmd) withErrPrint(f func(*cobra.Command, []string) error) func(*c
 	return func(cmd *cobra.Command, args []string) error {
 		err := f(cmd, args)
 		if err != nil && !s.SilenceOutput {
-			fmt.Fprintf(os.Stderr, "%s[ERROR] %s%s\n\n", RedTermStart, err.Error(), RedTermEnd)
+			fmt.Fprintf(os.Stderr, "%s[ERROR] %s%s\n\n", redTermStart, err.Error(), redTermEnd)
 		}
 		return err
 	}
